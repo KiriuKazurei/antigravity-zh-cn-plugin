@@ -1,0 +1,12 @@
+{
+  "name": "antigravity-zh-cn",
+  "displayName": "Antigravity 简体中文汉化包",
+  "version": "2.1.0",
+  "description": "为 Antigravity 2.0 提供全界面简体中文汉化、系统托盘汉化、更新自愈与专有名词保护。",
+  "author": "Antigravity Localization Team",
+  "suggestedPrompts": [
+    "检查 Antigravity 界面汉化状态",
+    "更新或补充 Antigravity 界面汉化词典",
+    "如何临时切换回原版英文界面"
+  ]
+}

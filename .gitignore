@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+runtime/loader.log
+runtime/heal.log
+runtime/heal_state.json
+.DS_Store
+Thumbs.db

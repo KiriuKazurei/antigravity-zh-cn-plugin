@@ -1,0 +1,11 @@
+{
+  "zh-cn-auto-heal": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "python scripts/session_hook.py",
+        "timeout": 15
+      }
+    ]
+  }
+}
