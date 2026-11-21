@@ -146,16 +146,106 @@
     "Allow": "允许",
     "Deny": "拒绝",
     "Always Allow": "始终允许",
+    "Always allow": "始终允许",
+    "Allow once": "仅允许本次",
+    "Allow for conversation": "在当前对话中允许",
+    "Allow in project": "在项目中允许",
+    "Allow in workspace": "在工作区中允许",
     "Always Proceed": "始终自动执行",
     "Always Ask": "始终询问",
     "Request Review": "请求确认",
     "Require Review": "需要确认",
     "Proceed in Sandbox": "沙箱内自动执行",
     "Auto": "自动",
+    "Skip": "跳过",
+    "Submit": "提交",
+    "Continue": "继续",
+    "No": "否",
+    "Run": "运行",
+    "Setup": "配置",
     "Inherit Global": "继承全局设置",
     "Use Global Settings": "使用全局设置",
     "Custom": "自定义",
     "Review": "审查确认",
+    "Runtime permission": "运行时权限",
+    "Every command requires approval.": "每条命令均需人工确认。",
+    "Ask before sensitive operations.": "执行敏感操作前请求确认。",
+    "Automatically decide if commands run.": "自动判断命令是否可直接运行。",
+    "Run all commands without restrictions.": "无限制地自动运行所有命令。",
+    "Only this conversation uses this preset.": "仅当前对话使用此预设。",
+    "This workspace overrides your global permission settings.": "当前工作区已覆盖您的全局权限设置。",
+    "This project overrides your global permission settings.": "当前项目已覆盖您的全局权限设置。",
+    "Workspace setting": "工作区设置",
+    "Project setting": "项目设置",
+    "Your Remote setting": "您的远程设置",
+    "Your This Computer setting": "您的本机设置",
+    "This Conversation": "当前对话",
+    "This computer": "本机",
+    "Permission preset": "权限预设",
+    "Controls the actions the agent can take.": "控制 Agent 可以执行的操作权限。",
+    "Confirm the command is safe to run outside of the sandbox with full network and disk access.": "请确认该命令安全，允许其在沙箱外运行并拥有完整的网络与磁盘访问权限。",
+    "Edit permission target": "编辑权限目标",
+    "Permission approval scope": "权限批准范围",
+    "In chat": "在对话中查看",
+    "Deny with note": "拒绝并附带说明",
+    "Tell the agent what to do instead...": "告诉 Agent 改为执行什么操作...",
+    "(tell the agent what to do instead)": "（告诉 Agent 改为执行什么操作）",
+    "Other (write your answer)": "其他（输入您的回答）",
+    "Yes, allow": "是，允许",
+    "Yes, allow this download": "是，允许此次下载",
+    "Yes, allow this time": "是，仅允许本次",
+    "Yes, save rule in this conversation": "是，在当前对话中保存规则",
+    "Yes, and always allow in this conversation": "是，并在当前对话中始终允许",
+    "Yes, allow for this conversation": "是，在当前对话中允许",
+    "Yes, save rule globally": "是，全局保存规则",
+    "Yes, and always allow": "是，并始终允许",
+    "Requires manual confirmation.": "需要人工确认。",
+    "Allow read access to this path?": "允许读取此路径？",
+    "Allow write access to this path?": "允许写入此路径？",
+    "Allow reading this URL?": "允许读取此 URL？",
+    "Allow executing actions on this URL?": "允许在此 URL 上执行操作？",
+    "Allow browser downloads from this site?": "允许从此站点下载文件？",
+    "Allow the browser agent to download a file?": "允许浏览器 Agent 下载文件？",
+    "Allow running this command?": "允许运行此命令？",
+    "Allow running this command outside the sandbox?": "允许在沙箱外运行此命令？",
+    "Allow using this MCP tool?": "允许使用此 MCP 工具？",
+    "Allow a one-time administrator (UAC) elevation?": "允许一次性管理员 (UAC) 提权？",
+    "Allow access to this resource?": "允许访问此资源？",
+    "Save rule to always allow read access to this path?": "保存规则以始终允许读取此路径？",
+    "Save rule to always allow write access to this path?": "保存规则以始终允许写入此路径？",
+    "Save rule to always allow reading this URL?": "保存规则以始终允许读取此 URL？",
+    "Save rule to always allow executing actions on this URL?": "保存规则以始终允许在此 URL 上执行操作？",
+    "Save rule to always allow browser downloads from this site?": "保存规则以始终允许从此站点下载文件？",
+    "Save rule to always allow running this command?": "保存规则以始终允许运行此命令？",
+    "Save rule to always allow running this command outside the sandbox?": "保存规则以始终允许在沙箱外运行此命令？",
+    "Save rule to always allow using this MCP tool?": "保存规则以始终允许使用此 MCP 工具？",
+    "Save rule to always allow a one-time administrator (UAC) elevation?": "保存规则以始终允许一次性管理员 (UAC) 提权？",
+    "Save rule to always allow access to this resource?": "保存规则以始终允许访问此资源？",
+    "File": "文件",
+    "From": "来源",
+    "Redirected from": "重定向自",
+    "Type": "类型",
+    "Save to": "保存至",
+    "Multi-select": "多选",
+    "Previous question": "上一题",
+    "Next question": "下一题",
+    "Expand questionnaire": "展开问卷",
+    "Collapse questionnaire": "折叠问卷",
+    "Expand Questionnaire": "展开问卷",
+    "Collapse Questionnaire": "折叠问卷",
+    "Cancel questionnaire": "取消问卷",
+    "Cancel Questionnaire and Stop the Agent": "取消问卷并停止 Agent",
+    "Waiting for your approval": "等待您的批准",
+    "Waiting for your answer": "等待您的回答",
+    "Waiting for user input": "等待用户输入",
+    "Confirmation required to execute this step": "执行此步骤需要确认",
+    "Confirm Browser Interaction": "确认浏览器交互",
+    "Send command input?": "发送命令输入？",
+    "Antigravity would like to use the browser.": "Antigravity 请求使用浏览器。",
+    "Launching the browser...": "正在启动浏览器...",
+    "The agent will wait for you to install the browser extension.": "Agent 将等待您安装浏览器扩展程序。",
+    "Deny setting up browser": "拒绝配置浏览器",
+    "Open Browser Setup": "打开浏览器配置",
     "Thought": "思考过程",
     "Thought Process": "思考过程",
     "Thought for": "思考时长",
@@ -250,10 +340,13 @@
     "Run terminal commands with sandbox restrictions.": "在受限沙箱环境中运行终端命令。",
     "Enable Sandbox Mode": "启用沙箱模式",
     "Restricts agent tools to a secure, isolated local sandbox.": "将 Agent 工具限制在安全隔离的本地沙箱中运行。",
+    "Terminal command auto execution": "终端命令自动执行策略",
     "Terminal Command Auto Execution": "终端命令自动执行策略",
     "Controls whether terminal commands require your approval before running.": "控制运行终端命令前是否需要您的确认。",
     "The agent always asks for confirmation before executing terminal commands (except those in the Allow list).": "执行终端命令前始终请求确认（白名单中的命令除外）。",
     "Terminal command automatically proceeds if the command runs inside the sandbox. Otherwise, it requests review.": "在沙箱内执行的终端命令将自动放行，超出沙箱范围则请求确认。",
+    "Terminal commands automatically proceed inside the sandbox. A command that needs to leave the sandbox proceeds only if an agent judges it reversible, and otherwise requests review.": "终端命令在沙箱内自动放行；需要离开沙箱的命令仅在 Agent 判定为可逆操作时自动继续，否则将请求人工确认。",
+    "The agent never asks for confirmation before executing terminal commands (except those in the Deny list). This provides the agent with the maximum ability to operate over long periods without intervention, but also has the highest risk of the agent executing an unsafe terminal command.": "Agent 在执行终端命令前从不请求确认（拒绝列表中的命令除外）。这能让 Agent 在无人干预的情况下长时间运行，但也具有执行不安全终端命令的最高风险。",
     "Enable Sounds for Agent": "启用 Agent 提示音",
     "Play a sound when your action is needed or the agent finishes.": "在需要您确认或 Agent 完成任务时播放提示音。",
     "Enable Notifications for Agent": "启用 Agent 桌面通知",
@@ -278,12 +371,17 @@
     "Global Permissions": "全局权限",
     "Permissions": "权限",
     "Local Permissions": "本地权限",
+    "Remote Permissions": "远程权限",
     "Network Permissions": "网络权限",
     "Terminal & Tooling Permissions": "终端与工具权限",
     "Permission Settings": "权限设置",
     "Permission Details": "权限详情",
     "Security Preset": "安全预设",
+    "Security preset": "安全预设",
     "Permission Preset": "权限预设",
+    "Enable sandbox mode": "启用沙箱模式",
+    "File access rules": "文件访问规则",
+    "Your agent\u2019s ability to execute commands is also controlled by enterprise security policies.": "Agent 执行命令的能力同时受企业安全策略控制。",
     "Manually customize individual settings.": "手动逐项自定义权限配置。",
     "Configure global allowed and denied resource permissions.": "配置全局允许或拒绝的资源访问权限。",
     "Configure what the agent can do in local and remote conversations.": "配置 Agent 在本地与远程对话中允许执行的操作。",
@@ -467,6 +565,98 @@
     {
       "regex": "^(\\d+)\\s*MCP servers? failed to start$",
       "replacement": "$1 个 MCP 服务器启动失败"
+    },
+    {
+      "regex": "^Allow ([a-z].+)\\?$",
+      "replacement": "允许$1？"
+    },
+    {
+      "regex": "^Save rule to always allow (.+)\\?$",
+      "replacement": "保存规则以始终允许$1？"
+    },
+    {
+      "regex": "^Yes, allow downloads from (.+) for this run$",
+      "replacement": "是，在本次运行中允许从 $1 下载"
+    },
+    {
+      "regex": "^Yes, allow downloads from (.+) in this conversation$",
+      "replacement": "是，在当前对话中允许从 $1 下载"
+    },
+    {
+      "regex": "^Yes, always allow downloads from (.+)$",
+      "replacement": "是，始终允许从 $1 下载"
+    },
+    {
+      "regex": "^Yes, allow (.+) in this conversation$",
+      "replacement": "是，在当前对话中允许 $1"
+    },
+    {
+      "regex": "^Yes, always allow (.+)$",
+      "replacement": "是，始终允许 $1"
+    },
+    {
+      "regex": "^Yes, save rule for '(.+)' in this conversation$",
+      "replacement": "是，在当前对话中保存针对“$1”的规则"
+    },
+    {
+      "regex": "^Yes, save rule for '(.+)' globally$",
+      "replacement": "是，全局保存针对“$1”的规则"
+    },
+    {
+      "regex": "^Yes, and always allow '(.+)' in this conversation$",
+      "replacement": "是，并在当前对话中始终允许“$1”"
+    },
+    {
+      "regex": "^Yes, and always allow '(.+)'$",
+      "replacement": "是，并始终允许“$1”"
+    },
+    {
+      "regex": "^Conflicts with your configured Ask permission:\\s*(.+)$",
+      "replacement": "与您配置的询问权限规则冲突: $1"
+    },
+    {
+      "regex": "^Requires manual confirmation:\\s*(.+)$",
+      "replacement": "需要人工确认: $1"
+    },
+    {
+      "regex": "^Submit \\((.+)\\)$",
+      "replacement": "提交 ($1)"
+    },
+    {
+      "regex": "^Continue \\((.+)\\)$",
+      "replacement": "继续 ($1)"
+    },
+    {
+      "regex": "^Skip \\((.+)\\), Skip All \\((.+)\\)$",
+      "replacement": "跳过 ($1)，全部跳过 ($2)"
+    },
+    {
+      "regex": "^Cancel Questionnaire and Stop the Agent \\((.+)\\)$",
+      "replacement": "取消问卷并停止 Agent ($1)"
+    },
+    {
+      "regex": "^Open Subagent:\\s*(.+)$",
+      "replacement": "打开 Subagent: $1"
+    },
+    {
+      "regex": "^Agent permissions preset selector, current:\\s*(.+)$",
+      "replacement": "Agent 权限预设选择器，当前: $1"
+    },
+    {
+      "regex": "^Agent permissions preset:\\s*(.+?),\\s*(.+)$",
+      "replacement": "Agent 权限预设: $1，$2"
+    },
+    {
+      "regex": "^This (\\w+) overrides your global permission settings\\.$",
+      "replacement": "当前 $1 已覆盖您的全局权限设置。"
+    },
+    {
+      "regex": "^Inherits your Global Permissions when working (.+)\\.$",
+      "replacement": "在 $1 工作时继承全局权限。"
+    },
+    {
+      "regex": "^(.+?)\\s+(?:needs|need) the terminal sandbox, which isn't available on this host\\.$",
+      "replacement": "$1 需要终端沙箱，但当前主机不支持该功能。"
     }
   ],
   "tray": {

@@ -60,6 +60,14 @@
     'TEXTAREA',
   ]);
 
+  const IGNORE_ATTR_TAGS = new Set([
+    'SCRIPT',
+    'STYLE',
+    'CODE',
+    'PRE',
+    'NOSCRIPT',
+  ]);
+
   const IGNORE_CLASSES = [
     'monaco-editor',
     'xterm',
@@ -68,16 +76,24 @@
     'hljs',
   ];
 
-  function shouldIgnoreElement(el) {
+  function shouldIgnoreElement(el, forAttributes = false) {
     if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
-    if (IGNORE_TAGS.has(el.tagName)) return true;
-    if (el.isContentEditable) return true;
+    const tagSet = forAttributes ? IGNORE_ATTR_TAGS : IGNORE_TAGS;
+    if (tagSet.has(el.tagName)) return true;
+    if (!forAttributes && el.isContentEditable) return true;
     if (el.classList) {
       for (const cls of IGNORE_CLASSES) {
         if (el.classList.contains(cls)) return true;
       }
     }
-    if (el.closest && el.closest('pre, code, .monaco-editor, .xterm, textarea, [contenteditable="true"]')) {
+    if (
+      el.closest &&
+      el.closest(
+        forAttributes
+          ? 'pre, code, .monaco-editor, .xterm'
+          : 'pre, code, .monaco-editor, .xterm, textarea, [contenteditable="true"]'
+      )
+    ) {
       return true;
     }
     return false;
@@ -122,7 +138,7 @@
 
   function translateElementAttributes(el) {
     if (!el || el.nodeType !== Node.ELEMENT_NODE) return;
-    if (shouldIgnoreElement(el)) return;
+    if (shouldIgnoreElement(el, true)) return;
 
     for (const attr of TRANSLATED_ATTRS) {
       const val = el.getAttribute(attr);
@@ -139,6 +155,9 @@
   function walkAndTranslate(root) {
     if (!root) return;
     if (root.nodeType === Node.ELEMENT_NODE && shouldIgnoreElement(root)) {
+      if (root.tagName === 'TEXTAREA') {
+        translateElementAttributes(root);
+      }
       return;
     }
 
