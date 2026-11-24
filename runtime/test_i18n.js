@@ -79,18 +79,30 @@ for (const key of requiredExact) {
 const compiledPatterns = dict.patterns.map((p) => ({
   regex: new RegExp(p.regex),
   replacement: p.replacement,
+  chain: p.chain === true,
+  chainOnly: p.chainOnly === true,
 }));
 function translate(str) {
   const trimmed = str.trim();
   if (Object.prototype.hasOwnProperty.call(dict.exact, trimmed)) {
     return str.replace(trimmed, dict.exact[trimmed]);
   }
+  let current = trimmed;
+  let matched = false;
+  let chained = false;
   for (const p of compiledPatterns) {
-    if (p.regex.test(trimmed)) {
-      return str.replace(trimmed, trimmed.replace(p.regex, p.replacement));
+    if (p.chainOnly && !chained) continue;
+    if (p.regex.test(current)) {
+      current = current.replace(p.regex, p.replacement);
+      matched = true;
+      if (p.chain) {
+        chained = true;
+      } else {
+        break;
+      }
     }
   }
-  return str;
+  return matched ? str.replace(trimmed, current) : str;
 }
 
 assert.strictEqual(translate('Allow running npm test outside the sandbox?'), '允许running npm test outside the sandbox？');
@@ -107,6 +119,34 @@ assert.strictEqual(
   translate('Default and Auto need the terminal sandbox, which isn\'t available on this host.'),
   'Default and Auto 需要终端沙箱，但当前主机不支持该功能。'
 );
+
+// Validate Models & Usage page translations and chained quota duration patterns
+assert.strictEqual(translate('Models & Usage'), '模型与用量');
+assert.strictEqual(translate('Your Plan: Google AI Pro'), '当前方案: Google AI Pro');
+assert.strictEqual(translate('Available AI Credits: 250'), '可用 AI 积分: 250');
+assert.strictEqual(
+  translate('You have used some of your weekly limit, it will fully refresh in 6 days, 18 hours.'),
+  '您已使用部分每周额度，将在 6 天 18 小时后完全重置。'
+);
+assert.strictEqual(
+  translate('You have used some of your 5-hour limit, it will fully refresh in 4 hours, 48 minutes.'),
+  '您已使用部分 5 小时额度，将在 4 小时 48 分钟后完全重置。'
+);
+assert.strictEqual(
+  translate('Weekly limit, resets in 6d 18h'),
+  '每周限额，将在 6 天 18 小时后重置'
+);
+assert.strictEqual(
+  translate('5h limit, resets in 45m'),
+  '5 小时限额，将在 45 分钟后重置'
+);
+assert.strictEqual(translate('5h limit'), '5 小时限额');
+assert.strictEqual(
+  translate('Resets in <1m'),
+  '将在不到 1 分钟后重置'
+);
+// Ensure chainOnly rules do not trigger on standalone strings
+assert.strictEqual(translate('6 days, 18 hours'), '6 days, 18 hours');
 
 // Verify i18n-engine.js translates TEXTAREA attributes (e.g. placeholder) while ignoring TEXTAREA text content
 const fakeDoc = {

@@ -37,6 +37,8 @@
           compiledPatterns.push({
             regex: new RegExp(p.regex),
             replacement: p.replacement,
+            chain: p.chain === true,
+            chainOnly: p.chainOnly === true,
           });
         } catch (_) {}
       }
@@ -109,11 +111,25 @@
       return str.replace(trimmed, translated);
     }
 
+    let current = trimmed;
+    let matched = false;
+    let chained = false;
+
     for (const p of compiledPatterns) {
-      if (p.regex.test(trimmed)) {
-        const translated = trimmed.replace(p.regex, p.replacement);
-        return str.replace(trimmed, translated);
+      if (p.chainOnly && !chained) continue;
+      if (p.regex.test(current)) {
+        current = current.replace(p.regex, p.replacement);
+        matched = true;
+        if (p.chain) {
+          chained = true;
+        } else {
+          break;
+        }
       }
+    }
+
+    if (matched) {
+      return str.replace(trimmed, current);
     }
 
     return null;

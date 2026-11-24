@@ -543,7 +543,64 @@
     "View Details": "查看详情",
     "Dismiss error": "关闭错误提示",
     "Download Diagnostics": "下载诊断信息",
-    "Provide Feedback": "提供反馈"
+    "Provide Feedback": "提供反馈",
+
+    "Show All": "显示全部",
+    "Show Less": "收起",
+    "Show 5": "显示 5 项",
+    "Show 10": "显示 10 项",
+    "Models & Usage": "模型与用量",
+    "Manage your model quota and credits.": "管理您的模型额度与积分。",
+    "Refresh quota and credits data": "刷新额度与积分数据",
+    "Plan": "订阅方案",
+    "Your Plan": "当前方案",
+    "Your Plan:": "当前方案:",
+    "Upgrade": "升级",
+    "You can upgrade to a Google AI Ultra plan to receive higher rate limits.": "您可以升级至 Google AI Ultra 方案以获得更高的速率限制。",
+    "Google One Referral": "Google One 推荐",
+    "Share your referral link with friends": "向好友分享您的推荐链接",
+    "Invite a Friend": "邀请好友",
+    "Project Required": "需要选择项目",
+    "License Required": "需要许可证",
+    "Model Credits": "模型积分",
+    "Enable AI Credit Overages": "启用 AI 积分超额使用",
+    "When toggled on, Antigravity will use your AI credits to fulfill model requests once you're out of model quota. Antigravity will always use your model quota first before using AI credits.": "开启后，当您的模型额度用尽时，Antigravity 将使用您的 AI 积分继续响应模型请求。Antigravity 始终会优先消耗模型额度，然后再使用 AI 积分。",
+    "See Activity": "查看明细",
+    "Get More AI Credits": "获取更多 AI 积分",
+    "Orchestrator Settings": "Orchestrator 设置",
+    "Choose the models Orchestrator uses. A larger, smarter orchestrator model with a faster, cheaper executor gives high quality for fewer tokens.": "选择 Orchestrator 使用的模型组合。使用更强大智能的编排模型搭配更快、更经济的执行模型，可在消耗更少 Token 的同时保证高质量。",
+    "Orchestrator Model": "Orchestrator 编排模型",
+    "Plans the work, makes design decisions, and reviews the result. Pick a top-tier model. You can also pick one per conversation from the Orchestrator row in the model menu.": "负责规划任务、制定设计决策并审查结果，建议选择顶级模型。您也可以在模型菜单的 Orchestrator 行中为单个对话单独指定。",
+    "Executor Model": "Executor 执行模型",
+    "Carries out the plan: searches, edits, builds, and tests. Pick a faster, cheaper model.": "负责执行具体计划：搜索、编辑、构建与测试，建议选择速度更快、成本更低的模型。",
+    "The Orchestrator's own planner": "Orchestrator 默认规划模型",
+    "Offloads routine steps to a faster executor. Same quality, fewer tokens used.": "将常规步骤交由更快的执行模型处理，同等质量下可消耗更少 Token。",
+    "Model Quota": "模型额度",
+    "No quota information available.": "暂无可用的额度信息。",
+    "For Antigravity Business consumption options, see": "有关 Antigravity Business 额度消耗选项，请参阅",
+    "documentation": "文档",
+    "Gemini Models": "Gemini 模型",
+    "Claude and GPT models": "Claude 与 GPT 模型",
+    "Weekly Limit Remaining": "每周剩余额度",
+    "Five Hour Limit Remaining": "每 5 小时剩余额度",
+    "Daily Limit Remaining": "每日剩余额度",
+    "Hourly Limit Remaining": "每小时剩余额度",
+    "Daily limit": "每日限额",
+    "Weekly limit": "每周限额",
+    "% left": "% 剩余",
+    "Resets in <1m": "将在不到 1 分钟后重置",
+    "Usage": "用量",
+    "Refreshing...": "正在刷新...",
+    "Refresh": "刷新",
+    "Recommended": "推荐",
+    "Thinking effort": "思考强度",
+    "Controls how much time and quota the model spends reasoning before responding. Higher effort improves accuracy on hard problems, at the cost of slower responses and higher quota use.": "控制模型在回复前投入多少思考时间与额度。更高的思考强度可提升复杂问题的准确率，但响应会更慢且消耗更多额度。",
+    "No models available": "暂无可用模型",
+    "Loading models...": "正在加载模型...",
+    "Add Model": "添加模型",
+    "Custom models are only supported on Linux machines.": "自定义模型目前仅支持 Linux 设备。",
+    "Too many requests, please try again in a bit!": "请求过于频繁，请稍后再试！",
+    "See plans": "查看订阅方案"
   },
   "patterns": [
     {
@@ -657,6 +714,191 @@
     {
       "regex": "^(.+?)\\s+(?:needs|need) the terminal sandbox, which isn't available on this host\\.$",
       "replacement": "$1 需要终端沙箱，但当前主机不支持该功能。"
+    },
+    {
+      "regex": "^Your Plan:\\s*(.+)$",
+      "replacement": "当前方案: $1"
+    },
+    {
+      "regex": "^You can upgrade to a (.+?) plan to receive higher rate limits\\.$",
+      "replacement": "您可以升级至 $1 方案以获得更高的速率限制。"
+    },
+    {
+      "regex": "^When toggled on, (.+?) will use your AI credits to fulfill model requests once you're out of model quota\\. \\1 will always use your model quota first before using AI credits\\.$",
+      "replacement": "开启后，当您的模型额度用尽时，$1 将使用您的 AI 积分继续响应模型请求。$1 始终会优先消耗模型额度，然后再使用 AI 积分。"
+    },
+    {
+      "regex": "^Available AI Credits:\\s*(.+)$",
+      "replacement": "可用 AI 积分: $1"
+    },
+    {
+      "regex": "^(\\d+)\\s+models selected$",
+      "replacement": "已选择 $1 个模型"
+    },
+    {
+      "regex": "^(\\d+)d\\s+limit$",
+      "replacement": "$1 天限额"
+    },
+    {
+      "regex": "^(\\d+)h\\s+limit$",
+      "replacement": "$1 小时限额"
+    },
+    {
+      "regex": "^(\\d+)m\\s+limit$",
+      "replacement": "$1 分钟限额"
+    },
+    {
+      "regex": "^(\\d+[smhd])\\s+limit$",
+      "replacement": "$1 限额"
+    },
+    {
+      "regex": "^Your quota for (.+?) will reset on (.+?)\\. Switch to another available model to continue\\.$",
+      "replacement": "您的 $1 额度将在 $2 重置。请切换至其他可用模型继续。"
+    },
+    {
+      "regex": "^Your quota for (.+?) has been reached\\. Switch to another available model to continue\\.$",
+      "replacement": "您的 $1 额度已用尽。请切换至其他可用模型继续。"
+    },
+    {
+      "regex": "^You have used some of your weekly limit, it will fully refresh in (.+?)\\.$",
+      "replacement": "您已使用部分每周额度，将在 $1后完全重置。",
+      "chain": true
+    },
+    {
+      "regex": "^You have used some of your 5-hour limit, it will fully refresh in (.+?)\\.$",
+      "replacement": "您已使用部分 5 小时额度，将在 $1后完全重置。",
+      "chain": true
+    },
+    {
+      "regex": "^You have used some of your daily limit, it will fully refresh in (.+?)\\.$",
+      "replacement": "您已使用部分每日额度，将在 $1后完全重置。",
+      "chain": true
+    },
+    {
+      "regex": "^You have used some of your (.+?) limit, it will fully refresh in (.+?)\\.$",
+      "replacement": "您已使用部分 $1 额度，将在 $2后完全重置。",
+      "chain": true
+    },
+    {
+      "regex": "^You have used all of your weekly limit, it will (?:fully )?refresh in (.+?)\\.$",
+      "replacement": "您的每周额度已用尽，将在 $1后完全重置。",
+      "chain": true
+    },
+    {
+      "regex": "^You have used all of your 5-hour limit, it will (?:fully )?refresh in (.+?)\\.$",
+      "replacement": "您的 5 小时额度已用尽，将在 $1后完全重置。",
+      "chain": true
+    },
+    {
+      "regex": "^You have used all of your daily limit, it will (?:fully )?refresh in (.+?)\\.$",
+      "replacement": "您的每日额度已用尽，将在 $1后完全重置。",
+      "chain": true
+    },
+    {
+      "regex": "^You have used all of your (.+?) limit, it will (?:fully )?refresh in (.+?)\\.$",
+      "replacement": "您的 $1 额度已用尽，将在 $2后完全重置。",
+      "chain": true
+    },
+    {
+      "regex": "^You have not used any of your weekly limit yet\\.$",
+      "replacement": "您尚未使用每周额度。"
+    },
+    {
+      "regex": "^You have not used any of your 5-hour limit yet\\.$",
+      "replacement": "您尚未使用 5 小时额度。"
+    },
+    {
+      "regex": "^You have not used any of your daily limit yet\\.$",
+      "replacement": "您尚未使用每日额度。"
+    },
+    {
+      "regex": "^You have not used any of your (.+?) limit yet\\.$",
+      "replacement": "您尚未使用 $1 额度。"
+    },
+    {
+      "regex": "^Daily limit, resets in (.+)$",
+      "replacement": "每日限额，将在 $1后重置",
+      "chain": true
+    },
+    {
+      "regex": "^Weekly limit, resets in (.+)$",
+      "replacement": "每周限额，将在 $1后重置",
+      "chain": true
+    },
+    {
+      "regex": "^(\\d+[smhd]) limit, resets in (.+)$",
+      "replacement": "$1限额，将在 $2后重置",
+      "chain": true
+    },
+    {
+      "regex": "^Resets in (.+)$",
+      "replacement": "将在 $1后重置",
+      "chain": true
+    },
+    {
+      "regex": "(\\d+)\\s+days?,\\s*(\\d+)\\s+hours?",
+      "replacement": "$1 天 $2 小时",
+      "chain": true,
+      "chainOnly": true
+    },
+    {
+      "regex": "(\\d+)\\s+hours?,\\s*(\\d+)\\s+minutes?",
+      "replacement": "$1 小时 $2 分钟",
+      "chain": true,
+      "chainOnly": true
+    },
+    {
+      "regex": "(\\d+)\\s+days?",
+      "replacement": "$1 天",
+      "chain": true,
+      "chainOnly": true
+    },
+    {
+      "regex": "(\\d+)\\s+hours?",
+      "replacement": "$1 小时",
+      "chain": true,
+      "chainOnly": true
+    },
+    {
+      "regex": "(\\d+)\\s+minutes?",
+      "replacement": "$1 分钟",
+      "chain": true,
+      "chainOnly": true
+    },
+    {
+      "regex": "(\\d+)d\\s+(\\d+)h",
+      "replacement": "$1 天 $2 小时",
+      "chain": true,
+      "chainOnly": true
+    },
+    {
+      "regex": "(\\d+)h\\s+(\\d+)m",
+      "replacement": "$1 小时 $2 分钟",
+      "chain": true,
+      "chainOnly": true
+    },
+    {
+      "regex": "\\b(\\d+)d\\b",
+      "replacement": "$1 天",
+      "chain": true,
+      "chainOnly": true
+    },
+    {
+      "regex": "\\b(\\d+)h\\b",
+      "replacement": "$1 小时",
+      "chain": true,
+      "chainOnly": true
+    },
+    {
+      "regex": "\\b(\\d+)m\\b",
+      "replacement": "$1 分钟",
+      "chain": true,
+      "chainOnly": true
+    },
+    {
+      "regex": "<1m|less than a minute",
+      "replacement": "不到 1 分钟",
+      "chainOnly": true
     }
   ],
   "tray": {

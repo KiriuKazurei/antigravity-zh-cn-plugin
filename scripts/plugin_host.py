@@ -331,6 +331,20 @@ def has_plugin_loader(asar_path):
         return False
 
 
+def has_current_plugin_loader(asar_path):
+    try:
+        if not os.path.exists(PLUGIN_LOADER_SRC):
+            return False
+        installed = read_asar_file(asar_path, ("dist", "pluginLoader.js"))
+        if installed is None:
+            return False
+        with open(PLUGIN_LOADER_SRC, "rb") as f:
+            expected = f.read()
+        return installed == expected
+    except Exception:
+        return False
+
+
 def has_legacy_preload_patch(asar_path):
     try:
         raw = read_asar_file(asar_path, ("dist", "preload.js"))
@@ -582,6 +596,7 @@ def cmd_status(explicit_dir=None):
             + (f" (版本: {get_asar_version(bak_path)})" if os.path.exists(bak_path) else "")
         )
         print(f"- app.asar 已安装宿主加载器: {has_plugin_loader(asar_path)}")
+        print(f"- app.asar 宿主加载器为最新: {has_current_plugin_loader(asar_path)}")
         print(f"- app.asar 存在旧版失效注入: {has_legacy_preload_patch(asar_path)}")
         print(f"- app.asar.staged 待应用包存在: {os.path.exists(staged_path)}")
     print(f"- 宿主注入日志存在: {os.path.exists(os.path.join(RUNTIME_DIR, 'loader.log'))}")
@@ -857,8 +872,9 @@ def run_session_hook():
     if not res_dir or not os.path.exists(asar_path):
         return {}
 
-    # Fast path: loader is already present in active app.asar
-    if has_plugin_loader(asar_path):
+    # Fast path: loader is already present and up to date in active app.asar
+    has_loader = has_plugin_loader(asar_path)
+    if has_loader and has_current_plugin_loader(asar_path):
         return {}
 
     cur_ver = get_asar_version(asar_path) or "unknown"
@@ -868,16 +884,18 @@ def run_session_hook():
         )
 
     asar_hash = file_sha256(asar_path)
+    loader_hash = file_sha256(PLUGIN_LOADER_SRC) if os.path.exists(PLUGIN_LOADER_SRC) else ""
+    heal_key = f"{asar_hash}:{loader_hash}"
     now = int(time.time())
     state = load_heal_state()
-    prev_hash = state.get("asar_sha256")
-    attempts = state.get("attempts", 0) if prev_hash == asar_hash else 0
-    last_attempt = state.get("last_attempt_ts", 0) if prev_hash == asar_hash else 0
+    prev_key = state.get("heal_key") or state.get("asar_sha256")
+    attempts = state.get("attempts", 0) if prev_key == heal_key else 0
+    last_attempt = state.get("last_attempt_ts", 0) if prev_key == heal_key else 0
 
     if attempts >= MAX_HEAL_ATTEMPTS_PER_HASH or (last_attempt and now - last_attempt < HEAL_COOLDOWN_SEC):
-        write_heal_log(f"Skipped auto-heal for v{cur_ver} ({asar_hash[:12]}): attempts={attempts}, cooldown")
+        write_heal_log(f"Skipped auto-heal for v{cur_ver} ({heal_key[:20]}): attempts={attempts}, cooldown")
         return make_user_notice(
-            f"检测到 **Antigravity**（`v{cur_ver}`）尚未接入汉化宿主（已触发防循环保护）。如需手动修复，请完全退出后运行：`python \"{os.path.join(SCRIPT_DIR, 'plugin_host.py')}\" install`"
+            f"检测到 **Antigravity**（`v{cur_ver}`）尚未接入最新插件宿主（已触发防循环保护）。如需手动修复，请完全退出后运行：`python \"{os.path.join(SCRIPT_DIR, 'plugin_host.py')}\" install`"
         )
 
     # Pre-stage & verify BEFORE touching running Antigravity
@@ -888,6 +906,7 @@ def run_session_hook():
         write_heal_log(f"Pre-stage failed for v{cur_ver}: {exc}")
         state.update(
             {
+                "heal_key": heal_key,
                 "asar_sha256": asar_hash,
                 "version": cur_ver,
                 "attempts": attempts + 1,
@@ -897,11 +916,12 @@ def run_session_hook():
         )
         save_heal_state(state)
         return make_user_notice(
-            f"检测到 **Antigravity** 已更新至 `v{cur_ver}`，但预构建汉化宿主失败（已安全跳过重启，不影响正常使用）：`{exc}`"
+            f"检测到 **Antigravity**（`v{cur_ver}`）需要更新插件宿主，但预构建失败（已安全跳过重启，不影响正常使用）：`{exc}`"
         )
 
     state.update(
         {
+            "heal_key": heal_key,
             "asar_sha256": asar_hash,
             "version": cur_ver,
             "attempts": attempts + 1,
@@ -917,12 +937,17 @@ def run_session_hook():
     except Exception as exc:
         write_heal_log(f"Failed to spawn detached healer: {exc}")
         return make_user_notice(
-            f"检测到 **Antigravity** 已更新至 `v{cur_ver}`，后台重启拉起失败（`{exc}`）。已预生成补丁包，退出软件后运行 `python \"{os.path.join(SCRIPT_DIR, 'plugin_host.py')}\" install` 即可。"
+            f"检测到 **Antigravity**（`v{cur_ver}`）插件宿主后台重启拉起失败（`{exc}`）。已预生成补丁包，退出软件后运行 `python \"{os.path.join(SCRIPT_DIR, 'plugin_host.py')}\" install` 即可。"
         )
 
-    write_heal_log(f"Scheduled auto-heal restart for v{cur_ver} ({asar_hash[:12]})")
+    reason_text = (
+        f"检测到插件宿主加载器已升级（**Antigravity** `v{cur_ver}`）"
+        if has_loader
+        else f"检测到 **Antigravity** 已更新至 `v{cur_ver}`"
+    )
+    write_heal_log(f"Scheduled auto-heal restart for v{cur_ver} ({heal_key[:20]})")
     return make_user_notice(
-        f"检测到 **Antigravity** 已更新至 `v{cur_ver}`，简体中文插件已预编译就绪，将在约 2 秒后礼貌关闭并自动重启以恢复汉化…"
+        f"{reason_text}，插件已预编译就绪，将在约 2 秒后礼貌关闭并自动重启以生效…"
     )
 
 
