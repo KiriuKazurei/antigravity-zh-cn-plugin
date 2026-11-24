@@ -1,5 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+const PLUGIN_LOADER_VERSION = "2.2.0";
+exports.PLUGIN_LOADER_VERSION = PLUGIN_LOADER_VERSION;
 exports.attachWebContents = attachWebContents;
 exports.translateTrayItem = translateTrayItem;
 exports.translateTrayItems = translateTrayItems;

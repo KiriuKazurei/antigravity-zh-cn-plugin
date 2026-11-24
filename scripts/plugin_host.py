@@ -1,11 +1,13 @@
 """
-Antigravity 简体中文插件自包含宿主管理与更新自愈工具
-Self-contained host manager for antigravity-zh-cn:
+Antigravity 插件自包含宿主管理与安全自愈工具
+Self-contained host manager for Antigravity UI plugins:
 - Cross-minor-version resilient app.asar patching (main.js regex fallback + non-fatal tray.js)
-- SessionStart hook verification & pre-staged auto-healing (polite close -> patch -> relaunch)
-- Safe anti-loop guard and backup verification
+- Monotonic pluginLoader.js version check (upgrade-only, never downgrade across plugins)
+- Non-disruptive SessionStart hook: pre-stage + in-app user notice + silent apply on manual exit (never force-kills Antigravity)
+- Zero-console-popup Windows background execution (CREATE_NO_WINDOW)
 """
 
+import csv
 import hashlib
 import json
 import os
@@ -41,9 +43,31 @@ PLUGIN_LOADER_SRC = os.path.join(SCRIPT_DIR, "pluginLoader.js")
 HEAL_STATE_PATH = os.path.join(RUNTIME_DIR, "heal_state.json")
 HEAL_LOG_PATH = os.path.join(RUNTIME_DIR, "heal.log")
 PLUGINS_ROOT = os.path.join(os.path.expanduser("~"), ".gemini", "config", "plugins")
+GLOBAL_HEAL_PREF_PATH = os.path.join(PLUGINS_ROOT, ".agy-host-heal.json")
+GLOBAL_EXIT_WATCHER_LOCK = os.path.join(PLUGINS_ROOT, ".agy-exit-watcher.lock")
 
 HEAL_COOLDOWN_SEC = 180
+NOTICE_COOLDOWN_SEC = 1800
+EXIT_WATCHER_MAX_SEC = 24 * 3600
 MAX_HEAL_ATTEMPTS_PER_HASH = 2
+LOADER_VERSION_RE = re.compile(r'PLUGIN_LOADER_VERSION\s*=\s*["\'](\d+(?:\.\d+)*)["\']')
+
+
+def _win_no_window_flags():
+    if platform.system() == "Windows":
+        return getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    return 0
+
+
+def _win_background_python():
+    exe = sys.executable
+    if platform.system() == "Windows" and exe:
+        base = os.path.basename(exe).lower()
+        if base == "python.exe":
+            pythonw = os.path.join(os.path.dirname(exe), "pythonw.exe")
+            if os.path.exists(pythonw):
+                return pythonw
+    return exe
 
 
 def strip_json_comments(text):
@@ -331,18 +355,77 @@ def has_plugin_loader(asar_path):
         return False
 
 
-def has_current_plugin_loader(asar_path):
+def parse_loader_version(raw_bytes):
+    if not raw_bytes:
+        return (0, 0, 0)
+    try:
+        head = raw_bytes[:4096].decode("utf-8", errors="ignore")
+        m = LOADER_VERSION_RE.search(head)
+        if not m:
+            return (0, 0, 0)
+        parts = [int(x) for x in m.group(1).split(".")]
+        while len(parts) < 3:
+            parts.append(0)
+        return tuple(parts[:3])
+    except Exception:
+        return (0, 0, 0)
+
+
+def format_loader_version(ver_tuple):
+    if not ver_tuple or ver_tuple == (0, 0, 0):
+        return "0.0.0 (legacy)"
+    return ".".join(str(x) for x in ver_tuple)
+
+
+def get_installed_loader_version(asar_path):
+    try:
+        raw = read_asar_file(asar_path, ("dist", "pluginLoader.js"))
+        if raw is None:
+            return None
+        return parse_loader_version(raw)
+    except Exception:
+        return None
+
+
+def get_local_loader_version():
     try:
         if not os.path.exists(PLUGIN_LOADER_SRC):
-            return False
+            return (0, 0, 0)
+        with open(PLUGIN_LOADER_SRC, "rb") as f:
+            return parse_loader_version(f.read(4096))
+    except Exception:
+        return (0, 0, 0)
+
+
+def needs_loader_upgrade(asar_path):
+    """
+    Monotonic upgrade check: returns (needs_update: bool, reason: str).
+    Never downgrades a newer installed pluginLoader.js to an older copy bundled in another plugin.
+    """
+    try:
+        if not os.path.exists(PLUGIN_LOADER_SRC):
+            return (False, "local_missing")
         installed = read_asar_file(asar_path, ("dist", "pluginLoader.js"))
         if installed is None:
-            return False
+            return (True, "missing")
         with open(PLUGIN_LOADER_SRC, "rb") as f:
             expected = f.read()
-        return installed == expected
+        installed_ver = parse_loader_version(installed)
+        local_ver = parse_loader_version(expected)
+        if installed_ver > local_ver:
+            return (False, "installed_newer")
+        if installed_ver < local_ver:
+            return (True, "upgrade")
+        if local_ver > (0, 0, 0):
+            return (False, "same_version")
+        return (installed != expected, "legacy_hash_diff" if installed != expected else "same_legacy")
     except Exception:
-        return False
+        return (False, "error")
+
+
+def has_current_plugin_loader(asar_path):
+    needs_up, _ = needs_loader_upgrade(asar_path)
+    return has_plugin_loader(asar_path) and not needs_up
 
 
 def has_legacy_preload_patch(asar_path):
@@ -519,14 +602,24 @@ def build_patched_asar(src_asar, dst_asar, quiet=False):
                 print(f"[警告] {w}")
             write_heal_log(f"WARN: {w}")
 
-    write_asar(dst_asar, header, file_bytes)
+    tmp_dst = f"{dst_asar}.{os.getpid()}.tmp"
+    try:
+        write_asar(tmp_dst, header, file_bytes)
 
-    # Verify the generated archive can be parsed and contains the loader
-    _, verify_bytes = load_asar(dst_asar)
-    if ("dist", "pluginLoader.js") not in verify_bytes:
-        raise RuntimeError("校验失败: 生成的 asar 中缺少 dist/pluginLoader.js")
-    if 'require("./pluginLoader")' not in verify_bytes[("dist", "main.js")].decode("utf-8"):
-        raise RuntimeError("校验失败: 生成的 asar 中 dist/main.js 未包含 pluginLoader 引用")
+        # Verify the generated archive can be parsed and contains the loader
+        _, verify_bytes = load_asar(tmp_dst)
+        if ("dist", "pluginLoader.js") not in verify_bytes:
+            raise RuntimeError("校验失败: 生成的 asar 中缺少 dist/pluginLoader.js")
+        if 'require("./pluginLoader")' not in verify_bytes[("dist", "main.js")].decode("utf-8"):
+            raise RuntimeError("校验失败: 生成的 asar 中 dist/main.js 未包含 pluginLoader 引用")
+
+        os.replace(tmp_dst, dst_asar)
+    finally:
+        if os.path.exists(tmp_dst):
+            try:
+                os.remove(tmp_dst)
+            except Exception:
+                pass
 
 
 def get_paths(explicit_dir=None):
@@ -564,14 +657,23 @@ def sync_to_plugins_dir():
     if os.path.abspath(PLUGIN_DIR) == os.path.abspath(dst_dir):
         return dst_dir
     os.makedirs(dst_dir, exist_ok=True)
-    preserve = {"loader.log", "heal.log", "heal_state.json"}
+    preserve = {
+        "loader.log",
+        "heal.log",
+        "heal_state.json",
+        "kb-config.json",
+        "notify.log",
+        "notifier-config.json",
+        "snippets.json",
+        "usage-history.json",
+    }
     for root, dirs, files in os.walk(PLUGIN_DIR):
         dirs[:] = [d for d in dirs if d not in ("__pycache__", ".git")]
         rel_root = os.path.relpath(root, PLUGIN_DIR)
         dst_root = dst_dir if rel_root == "." else os.path.join(dst_dir, rel_root)
         os.makedirs(dst_root, exist_ok=True)
         for fn in files:
-            if fn.endswith(".pyc"):
+            if fn.endswith((".pyc", ".tmp")):
                 continue
             if rel_root == "runtime" and fn in preserve and os.path.exists(os.path.join(dst_root, fn)):
                 continue
@@ -580,27 +682,107 @@ def sync_to_plugins_dir():
     return dst_dir
 
 
+def _atomic_write_json(path, data):
+    tmp_path = f"{path}.{os.getpid()}.tmp"
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+
+def load_global_heal_pref():
+    return read_json_safe(GLOBAL_HEAL_PREF_PATH, is_jsonc=False) or {}
+
+
+def save_global_heal_pref(pref):
+    _atomic_write_json(GLOBAL_HEAL_PREF_PATH, pref)
+
+
+def _get_heal_disable_state():
+    if os.environ.get("AGY_DISABLE_AUTO_HEAL", "").strip() in ("1", "true", "TRUE", "yes"):
+        return (True, "已禁用 (环境变量 AGY_DISABLE_AUTO_HEAL=1)")
+    pref = load_global_heal_pref()
+    if pref.get("disabled_permanent"):
+        return (True, "已永久禁用 (运行 enable-heal 恢复)")
+    disabled_until = pref.get("disabled_until", 0)
+    if isinstance(disabled_until, (int, float)) and disabled_until > time.time():
+        remain_h = max(0.1, (disabled_until - time.time()) / 3600.0)
+        return (True, f"已暂时禁用 (剩余约 {remain_h:.1f} 小时)")
+    return (False, "已启用 (仅程序内提醒 + 手动退出后静默替换，绝不强杀进程)")
+
+
+def is_auto_heal_disabled():
+    return _get_heal_disable_state()[0]
+
+
+def get_heal_disable_summary():
+    return _get_heal_disable_state()[1]
+
+
+def cmd_disable_heal(hours=24, permanent=False, explicit_dir=None):
+    pref = load_global_heal_pref()
+    if permanent:
+        pref["disabled_permanent"] = True
+        pref["disabled_until"] = 0
+    else:
+        pref["disabled_permanent"] = False
+        pref["disabled_until"] = int(time.time() + max(1, hours) * 3600)
+    save_global_heal_pref(pref)
+
+    # Cancel any pending staged package so exit watcher exits cleanly
+    res_dir, _, _, staged_path, _ = get_paths(explicit_dir)
+    if res_dir and staged_path and os.path.exists(staged_path):
+        try:
+            os.remove(staged_path)
+            print(f"已取消待应用补丁包: {staged_path}")
+        except Exception:
+            pass
+
+    if permanent:
+        print("[成功] 已永久暂停插件宿主自愈提醒（随时可运行 enable-heal 恢复）。")
+    else:
+        print(f"[成功] 已暂时禁用插件宿主自愈提醒 {max(1, hours)} 小时（随时可运行 enable-heal 恢复）。")
+
+
+def cmd_enable_heal():
+    pref = load_global_heal_pref()
+    pref["disabled_permanent"] = False
+    pref["disabled_until"] = 0
+    pref["last_notice_ts"] = 0
+    save_global_heal_pref(pref)
+    print("[成功] 已恢复插件宿主自愈提醒（模式：程序内提醒 + 手动退出后静默更新）。")
+
+
 def cmd_status(explicit_dir=None):
     res_dir, asar_path, bak_path, staged_path, _ = get_paths(explicit_dir)
-    print("=== Antigravity 汉化插件状态检查 ===")
+    print(f"=== Antigravity 插件宿主状态检查 ({PLUGIN_NAME}) ===")
     print(f"- 插件目录: {PLUGIN_DIR}")
     print(f"- 插件启用: {is_plugin_enabled()}")
-    print(
-        f"- 运行时就绪: {os.path.exists(os.path.join(RUNTIME_DIR, 'zh-CN.json')) and os.path.exists(os.path.join(RUNTIME_DIR, 'i18n-engine.js'))}"
-    )
+    print(f"- 自愈策略: {get_heal_disable_summary()}")
+    local_ver = get_local_loader_version()
+    print(f"- 本地 pluginLoader 版本: {format_loader_version(local_ver)}")
     print(f"- 探测到安装目录: {res_dir or '未找到'}")
     if res_dir:
+        installed_ver = get_installed_loader_version(asar_path)
+        needs_up, up_reason = needs_loader_upgrade(asar_path)
         print(f"- app.asar 存在: {os.path.exists(asar_path)} (版本: {get_asar_version(asar_path)})")
         print(
             f"- app.asar.bak 备份存在: {os.path.exists(bak_path)}"
             + (f" (版本: {get_asar_version(bak_path)})" if os.path.exists(bak_path) else "")
         )
-        print(f"- app.asar 已安装宿主加载器: {has_plugin_loader(asar_path)}")
-        print(f"- app.asar 宿主加载器为最新: {has_current_plugin_loader(asar_path)}")
+        print(f"- app.asar 已安装宿主加载器: {has_plugin_loader(asar_path)} (版本: {format_loader_version(installed_ver) if installed_ver is not None else '未安装'})")
+        print(f"- 需要升级宿主加载器: {needs_up} ({up_reason})")
         print(f"- app.asar 存在旧版失效注入: {has_legacy_preload_patch(asar_path)}")
         print(f"- app.asar.staged 待应用包存在: {os.path.exists(staged_path)}")
     print(f"- 宿主注入日志存在: {os.path.exists(os.path.join(RUNTIME_DIR, 'loader.log'))}")
-    print(f"- 自动自愈日志存在: {os.path.exists(HEAL_LOG_PATH)}")
+    print(f"- 自愈日志存在: {os.path.exists(HEAL_LOG_PATH)}")
 
 
 def cmd_install(stage_only=False, explicit_dir=None, do_sync=True):
@@ -625,12 +807,10 @@ def cmd_install(stage_only=False, explicit_dir=None, do_sync=True):
         return
 
     try:
-        if os.path.exists(asar_path):
-            os.remove(asar_path)
-        os.rename(staged_path, asar_path)
+        os.replace(staged_path, asar_path)
         print("[成功] 宿主加载器已直接安装至 app.asar，启动 Antigravity 即可生效！")
     except PermissionError:
-        print("[就绪] app.asar 当前正被运行中的 Antigravity 占用，已生成 app.asar.staged 等待替换。")
+        print("[就绪] app.asar 当前正被运行中的 Antigravity 占用，已生成 app.asar.staged 等待退出后替换。")
 
 
 def cmd_restore(explicit_dir=None):
@@ -653,43 +833,93 @@ def load_heal_state():
 
 
 def save_heal_state(state):
+    _atomic_write_json(HEAL_STATE_PATH, state)
+
+
+def _is_pid_alive(pid):
+    if not isinstance(pid, int) or pid <= 0:
+        return False
     try:
-        os.makedirs(RUNTIME_DIR, exist_ok=True)
-        with open(HEAL_STATE_PATH, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
+        if platform.system() == "Windows":
+            import ctypes
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            ERROR_ACCESS_DENIED = 5
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+            if not handle:
+                return ctypes.get_last_error() == ERROR_ACCESS_DENIED
+            try:
+                code = ctypes.c_ulong()
+                if kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                    return code.value == STILL_ACTIVE
+                return False
+            finally:
+                kernel32.CloseHandle(handle)
+        os.kill(pid, 0)
+        return True
     except Exception:
-        pass
+        return False
 
 
-def spawn_detached_healer(resources_dir, exe_path):
-    cmd_args = [
-        sys.executable,
-        os.path.abspath(__file__),
-        "apply-and-restart",
-        "--resources-dir",
-        resources_dir,
-    ]
-    if exe_path:
-        cmd_args.extend(["--exe", exe_path])
+def _is_exit_watcher_running():
+    lock_data = read_json_safe(GLOBAL_EXIT_WATCHER_LOCK, is_jsonc=False)
+    if not isinstance(lock_data, dict):
+        return False
+    pid = lock_data.get("pid")
+    started = lock_data.get("started_at", 0)
+    if not isinstance(started, (int, float)) or time.time() - started > EXIT_WATCHER_MAX_SEC + 60:
+        return False
+    return _is_pid_alive(pid)
 
+
+def _acquire_exit_watcher_lock(resources_dir):
+    """Atomically acquire single-instance lock using O_CREAT | O_EXCL."""
+    os.makedirs(PLUGINS_ROOT, exist_ok=True)
+    payload = json.dumps(
+        {"pid": os.getpid(), "started_at": int(time.time()), "resources_dir": resources_dir}
+    ).encode("utf-8")
+    for _ in range(2):
+        try:
+            fd = os.open(GLOBAL_EXIT_WATCHER_LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            try:
+                os.write(fd, payload)
+            finally:
+                os.close(fd)
+            return True
+        except FileExistsError:
+            if _is_exit_watcher_running():
+                return False
+            # Stale lock left by dead/timed-out process: remove and retry once
+            try:
+                os.remove(GLOBAL_EXIT_WATCHER_LOCK)
+            except OSError:
+                return False
+        except OSError:
+            return False
+    return False
+
+
+def _spawn_background_script(cmd_args):
     if platform.system() == "Windows":
-        # Double-fork on Windows breaks the parent-child PID link to language_server.exe
-        # so `taskkill /pid <ls_pid> /T /F` during Antigravity shutdown will not kill the healer.
-        DETACHED_PROCESS = 0x00000008
+        CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
         CREATE_NEW_PROCESS_GROUP = 0x00000200
+        flags = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+        bg_python = _win_background_python()
+        # Double-fork breaks parent-child PID link without opening any console window
         launcher_code = (
             "import subprocess; "
             f"subprocess.Popen({cmd_args!r}, "
             "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, "
-            f"close_fds=True, creationflags={DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP})"
+            f"close_fds=True, creationflags={flags})"
         )
         mid = subprocess.Popen(
-            [sys.executable, "-c", launcher_code],
+            [bg_python, "-c", launcher_code],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             close_fds=True,
-            creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+            creationflags=flags,
         )
         mid.wait(timeout=3)
     else:
@@ -703,47 +933,82 @@ def spawn_detached_healer(resources_dir, exe_path):
         )
 
 
-def is_antigravity_running():
+def spawn_exit_watcher(resources_dir):
+    if _is_exit_watcher_running():
+        return
+    bg_python = _win_background_python()
+    cmd_args = [
+        bg_python,
+        os.path.abspath(__file__),
+        "apply-on-exit",
+        "--resources-dir",
+        resources_dir,
+    ]
+    _spawn_background_script(cmd_args)
+
+
+def spawn_detached_healer(resources_dir, exe_path):
+    """Explicit manual restart helper (never called automatically by SessionStart hook)."""
+    bg_python = _win_background_python()
+    cmd_args = [
+        bg_python,
+        os.path.abspath(__file__),
+        "apply-and-restart",
+        "--resources-dir",
+        resources_dir,
+    ]
+    if exe_path:
+        cmd_args.extend(["--exe", exe_path])
+    _spawn_background_script(cmd_args)
+
+
+def is_antigravity_running(default_on_error=True):
     system = platform.system()
     try:
         if system == "Windows":
             out = subprocess.check_output(
-                ["tasklist", "/FI", "IMAGENAME eq Antigravity.exe", "/NH"],
+                ["tasklist", "/FI", "IMAGENAME eq Antigravity.exe", "/FO", "CSV", "/NH"],
                 text=True,
                 stderr=subprocess.DEVNULL,
-                timeout=3,
+                timeout=8,
+                creationflags=_win_no_window_flags(),
             )
-            return "Antigravity.exe" in out
+            for row in csv.reader(out.splitlines()):
+                if len(row) >= 1 and row[0].strip().lower() == "antigravity.exe":
+                    return True
+            return False
         if system == "Darwin":
             rc = subprocess.run(["pgrep", "-x", "Antigravity"], capture_output=True).returncode
             return rc == 0
         rc = subprocess.run(["pgrep", "-f", "antigravity"], capture_output=True).returncode
         return rc == 0
     except Exception:
-        return False
+        return default_on_error
 
 
 def polite_close_antigravity():
+    """Only used when the user explicitly runs manual `apply-and-restart`."""
     system = platform.system()
     if system == "Windows":
-        # 1. Polite WM_CLOSE first (saves window bounds and workspace state cleanly)
+        no_win = _win_no_window_flags()
         write_heal_log("Sending polite close (WM_CLOSE) to Antigravity.exe...")
         subprocess.run(
             ["taskkill", "/IM", "Antigravity.exe"],
             capture_output=True,
             timeout=5,
+            creationflags=no_win,
         )
         for _ in range(12):  # Wait up to 6s
             time.sleep(0.5)
             if not is_antigravity_running():
                 write_heal_log("Antigravity.exe exited gracefully.")
                 return
-        # 2. Fallback if RUN_IN_BACKGROUND kept tray process alive
         write_heal_log("Antigravity.exe still running (likely tray background mode); closing tree...")
         subprocess.run(
             ["taskkill", "/IM", "Antigravity.exe", "/F", "/T"],
             capture_output=True,
             timeout=5,
+            creationflags=no_win,
         )
         for _ in range(10):
             time.sleep(0.3)
@@ -774,7 +1039,7 @@ def relaunch_antigravity(exe_path):
         return
     write_heal_log(f"Relaunching Antigravity: {exe_path}")
     if platform.system() == "Windows":
-        DETACHED_PROCESS = 0x00000008
+        CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
         CREATE_NEW_PROCESS_GROUP = 0x00000200
         subprocess.Popen(
             [exe_path],
@@ -782,7 +1047,7 @@ def relaunch_antigravity(exe_path):
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             close_fds=True,
-            creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+            creationflags=CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
         )
     elif platform.system() == "Darwin":
         app_bundle = os.path.abspath(os.path.join(os.path.dirname(exe_path), "..", ".."))
@@ -798,36 +1063,112 @@ def relaunch_antigravity(exe_path):
         )
 
 
-def cmd_apply_and_restart(resources_dir, exe_path=None):
-    write_heal_log(f"Healer started (resources_dir={resources_dir}, exe={exe_path})")
-    asar_path = os.path.join(resources_dir, "app.asar")
-    staged_path = os.path.join(resources_dir, "app.asar.staged")
-    if not os.path.exists(staged_path):
-        write_heal_log("Aborted: app.asar.staged missing.")
-        return
-
-    # Give SessionStart hook enough time to exit cleanly and render the notice
-    time.sleep(1.8)
-
-    polite_close_antigravity()
-
-    # Wait briefly for Windows file locks to drain, then swap atomically
-    replaced = False
+def _swap_staged_asar(asar_path, staged_path, retries=25):
     last_err = None
-    for _ in range(25):
+    for _ in range(retries):
         try:
-            if os.path.exists(asar_path):
-                os.remove(asar_path)
-            os.rename(staged_path, asar_path)
-            replaced = True
-            break
+            if not os.path.exists(staged_path):
+                return (False, "app.asar.staged missing")
+            os.replace(staged_path, asar_path)
+            return (True, None)
         except PermissionError as exc:
             last_err = exc
             time.sleep(0.3)
         except Exception as exc:
             last_err = exc
             break
+    return (False, last_err)
 
+
+def cmd_apply_on_exit(resources_dir):
+    """
+    Non-disruptive exit watcher: waits silently until the user manually closes Antigravity,
+    then replaces app.asar with app.asar.staged. Never kills or restarts Antigravity.
+    """
+    if not _acquire_exit_watcher_lock(resources_dir):
+        return
+
+    asar_path = os.path.join(resources_dir, "app.asar")
+    staged_path = os.path.join(resources_dir, "app.asar.staged")
+    write_heal_log(f"Exit watcher started (pid={os.getpid()}, resources_dir={resources_dir}). Waiting for manual exit...")
+
+    deadline = time.time() + EXIT_WATCHER_MAX_SEC
+    try:
+        while time.time() < deadline:
+            if is_auto_heal_disabled():
+                write_heal_log("Exit watcher stopped: auto-heal disabled by user.")
+                return
+            if not os.path.exists(staged_path):
+                write_heal_log("Exit watcher stopped: app.asar.staged no longer present.")
+                return
+            if not is_antigravity_running(default_on_error=True):
+                time.sleep(1.0)
+                if is_antigravity_running(default_on_error=True):
+                    continue
+                if is_auto_heal_disabled() or not os.path.exists(staged_path):
+                    return
+                # Guard against downgrading Antigravity itself if official auto-update upgraded app.asar
+                staged_app_ver = get_asar_version(staged_path)
+                active_app_ver = get_asar_version(asar_path)
+                if staged_app_ver and active_app_ver and staged_app_ver != active_app_ver:
+                    write_heal_log(
+                        f"Exit watcher aborted: app.asar version changed ({staged_app_ver} -> {active_app_ver}); removing stale staged file."
+                    )
+                    try:
+                        os.remove(staged_path)
+                    except Exception:
+                        pass
+                    return
+                # Guard against downgrading pluginLoader if app.asar was already updated
+                staged_ver = get_installed_loader_version(staged_path) or (0, 0, 0)
+                active_ver = get_installed_loader_version(asar_path)
+                if active_ver is not None and active_ver >= staged_ver and staged_ver > (0, 0, 0):
+                    write_heal_log(
+                        f"Exit watcher skipped swap: active loader ({format_loader_version(active_ver)}) >= staged ({format_loader_version(staged_ver)})."
+                    )
+                    try:
+                        os.remove(staged_path)
+                    except Exception:
+                        pass
+                    return
+                replaced, err = _swap_staged_asar(asar_path, staged_path, retries=20)
+                if replaced:
+                    ver = get_asar_version(asar_path)
+                    write_heal_log(f"Successfully applied app.asar on manual exit (v{ver}, loader {format_loader_version(staged_ver)}).")
+                    state = load_heal_state()
+                    state["last_success_ts"] = int(time.time())
+                    state["last_success_version"] = ver
+                    save_heal_state(state)
+                    return
+                if is_antigravity_running(default_on_error=True):
+                    write_heal_log(f"Swap deferred (Antigravity restarted quickly): {err}")
+                    continue
+                write_heal_log(f"Failed to replace app.asar on manual exit: {err}")
+                return
+            time.sleep(2.0)
+        write_heal_log("Exit watcher timed out after 24h without Antigravity exit.")
+    finally:
+        try:
+            lock_data = read_json_safe(GLOBAL_EXIT_WATCHER_LOCK, is_jsonc=False)
+            if isinstance(lock_data, dict) and lock_data.get("pid") == os.getpid():
+                os.remove(GLOBAL_EXIT_WATCHER_LOCK)
+        except Exception:
+            pass
+
+
+def cmd_apply_and_restart(resources_dir, exe_path=None):
+    """Explicit manual restart command (never triggered automatically during work)."""
+    write_heal_log(f"Manual apply-and-restart started (resources_dir={resources_dir}, exe={exe_path})")
+    asar_path = os.path.join(resources_dir, "app.asar")
+    staged_path = os.path.join(resources_dir, "app.asar.staged")
+    if not os.path.exists(staged_path):
+        write_heal_log("Aborted: app.asar.staged missing.")
+        return
+
+    time.sleep(1.0)
+    polite_close_antigravity()
+
+    replaced, last_err = _swap_staged_asar(asar_path, staged_path, retries=25)
     if not replaced:
         write_heal_log(f"Failed to replace app.asar: {last_err}")
         return
@@ -865,89 +1206,106 @@ def run_session_hook():
     except Exception:
         pass
 
-    if not is_plugin_enabled():
+    if not is_plugin_enabled() or is_auto_heal_disabled():
         return {}
 
     res_dir, asar_path, bak_path, staged_path, _ = get_paths()
     if not res_dir or not os.path.exists(asar_path):
         return {}
 
-    # Fast path: loader is already present and up to date in active app.asar
-    has_loader = has_plugin_loader(asar_path)
-    if has_loader and has_current_plugin_loader(asar_path):
+    # Fast path: monotonic version check (never downgrades a newer installed loader)
+    needs_up, up_reason = needs_loader_upgrade(asar_path)
+    if not needs_up:
         return {}
 
     cur_ver = get_asar_version(asar_path) or "unknown"
+    script_path = os.path.join(SCRIPT_DIR, "plugin_host.py")
     if has_legacy_preload_patch(asar_path):
         return make_user_notice(
-            f"检测到旧版汉化残留，请运行 `python \"{os.path.join(SCRIPT_DIR, 'plugin_host.py')}\" restore` 后再执行 `install`。"
+            f"检测到旧版失效注入残留，请先手动退出 **Antigravity** 后运行：`python \"{script_path}\" restore` 再执行 `install`。"
         )
 
+    local_ver = get_local_loader_version()
+    installed_ver = get_installed_loader_version(asar_path)
     asar_hash = file_sha256(asar_path)
     loader_hash = file_sha256(PLUGIN_LOADER_SRC) if os.path.exists(PLUGIN_LOADER_SRC) else ""
     heal_key = f"{asar_hash}:{loader_hash}"
     now = int(time.time())
-    state = load_heal_state()
-    prev_key = state.get("heal_key") or state.get("asar_sha256")
-    attempts = state.get("attempts", 0) if prev_key == heal_key else 0
-    last_attempt = state.get("last_attempt_ts", 0) if prev_key == heal_key else 0
 
-    if attempts >= MAX_HEAL_ATTEMPTS_PER_HASH or (last_attempt and now - last_attempt < HEAL_COOLDOWN_SEC):
-        write_heal_log(f"Skipped auto-heal for v{cur_ver} ({heal_key[:20]}): attempts={attempts}, cooldown")
-        return make_user_notice(
-            f"检测到 **Antigravity**（`v{cur_ver}`）尚未接入最新插件宿主（已触发防循环保护）。如需手动修复，请完全退出后运行：`python \"{os.path.join(SCRIPT_DIR, 'plugin_host.py')}\" install`"
-        )
+    # Pre-stage only if not already staged for the same app version with >= local loader version
+    need_stage = True
+    if os.path.exists(staged_path):
+        staged_app_ver = get_asar_version(staged_path)
+        staged_ver = get_installed_loader_version(staged_path) or (0, 0, 0)
+        same_app_ver = bool(staged_app_ver and cur_ver != "unknown" and staged_app_ver == cur_ver)
+        if same_app_ver and staged_ver >= local_ver and local_ver > (0, 0, 0):
+            need_stage = False
+        elif same_app_ver and time.time() - os.path.getmtime(staged_path) < 45 and staged_ver >= local_ver:
+            need_stage = False
 
-    # Pre-stage & verify BEFORE touching running Antigravity
+    if need_stage:
+        try:
+            ensure_clean_backup(asar_path, bak_path, quiet=True)
+            build_patched_asar(bak_path, staged_path, quiet=True)
+            write_heal_log(
+                f"Pre-staged app.asar.staged for v{cur_ver} (loader {format_loader_version(installed_ver) if installed_ver is not None else 'none'} -> {format_loader_version(local_ver)}, reason={up_reason})"
+            )
+        except Exception as exc:
+            write_heal_log(f"Pre-stage failed for v{cur_ver}: {exc}")
+            return make_user_notice(
+                f"检测到 **Antigravity**（`v{cur_ver}`）需要更新插件宿主，但预构建失败（未做任何中断操作，不影响正常使用）：`{exc}`"
+            )
+
+    # Start silent, non-disruptive exit watcher (never kills Antigravity)
     try:
-        ensure_clean_backup(asar_path, bak_path, quiet=True)
-        build_patched_asar(bak_path, staged_path, quiet=True)
+        spawn_exit_watcher(res_dir)
     except Exception as exc:
-        write_heal_log(f"Pre-stage failed for v{cur_ver}: {exc}")
-        state.update(
-            {
-                "heal_key": heal_key,
-                "asar_sha256": asar_hash,
-                "version": cur_ver,
-                "attempts": attempts + 1,
-                "last_attempt_ts": now,
-                "last_error": str(exc),
-            }
-        )
-        save_heal_state(state)
-        return make_user_notice(
-            f"检测到 **Antigravity**（`v{cur_ver}`）需要更新插件宿主，但预构建失败（已安全跳过重启，不影响正常使用）：`{exc}`"
-        )
+        write_heal_log(f"Failed to spawn exit watcher: {exc}")
 
-    state.update(
-        {
-            "heal_key": heal_key,
-            "asar_sha256": asar_hash,
-            "version": cur_ver,
-            "attempts": attempts + 1,
-            "last_attempt_ts": now,
-            "last_error": "",
-        }
-    )
-    save_heal_state(state)
-
-    exe_path = find_antigravity_exe(res_dir)
+    # Global notice cooldown with atomic short lock so concurrent hooks never spam duplicate notices
+    notice_lock = os.path.join(PLUGINS_ROOT, ".agy-notice.lock")
+    claimed_lock = False
     try:
-        spawn_detached_healer(res_dir, exe_path)
-    except Exception as exc:
-        write_heal_log(f"Failed to spawn detached healer: {exc}")
-        return make_user_notice(
-            f"检测到 **Antigravity**（`v{cur_ver}`）插件宿主后台重启拉起失败（`{exc}`）。已预生成补丁包，退出软件后运行 `python \"{os.path.join(SCRIPT_DIR, 'plugin_host.py')}\" install` 即可。"
-        )
+        os.makedirs(PLUGINS_ROOT, exist_ok=True)
+        try:
+            fd = os.open(notice_lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            claimed_lock = True
+        except FileExistsError:
+            # Another concurrent hook is currently emitting a notice; clear only if stale (>15s)
+            try:
+                if time.time() - os.path.getmtime(notice_lock) > 15:
+                    os.remove(notice_lock)
+            except OSError:
+                pass
+            return {}
+
+        pref = load_global_heal_pref()
+        last_notice_key = pref.get("last_notice_key", "")
+        last_notice_ts = pref.get("last_notice_ts", 0)
+        if last_notice_key == heal_key and (now - last_notice_ts) < NOTICE_COOLDOWN_SEC:
+            return {}
+
+        pref["last_notice_key"] = heal_key
+        pref["last_notice_ts"] = now
+        save_global_heal_pref(pref)
+    finally:
+        if claimed_lock:
+            try:
+                os.remove(notice_lock)
+            except OSError:
+                pass
 
     reason_text = (
-        f"检测到插件宿主加载器已升级（**Antigravity** `v{cur_ver}`）"
-        if has_loader
-        else f"检测到 **Antigravity** 已更新至 `v{cur_ver}`"
+        f"检测到插件宿主加载器有新版本（`{format_loader_version(installed_ver)}` → `{format_loader_version(local_ver)}`）"
+        if installed_ver is not None
+        else f"检测到 **Antigravity**（`v{cur_ver}`）尚未注入插件宿主加载器（`{format_loader_version(local_ver)}`）"
     )
-    write_heal_log(f"Scheduled auto-heal restart for v{cur_ver} ({heal_key[:20]})")
     return make_user_notice(
-        f"{reason_text}，插件已预编译就绪，将在约 2 秒后礼貌关闭并自动重启以生效…"
+        f"**[插件宿主更新提醒]** {reason_text}。\n\n"
+        f"补丁包 `app.asar.staged` 已安全预编译就绪，**不会强制关闭或打断你当前的工作**。请选择：\n"
+        f"- **手动重启生效**：在你方便时手动完全退出 **Antigravity**，后台监听会在软件自然退出后静默完成替换，下次打开即生效；\n"
+        f"- **暂时禁用提醒**：若当前不想更新，可运行 `python \"{script_path}\" disable-heal`（默认暂停 24 小时，加 `--permanent` 永久暂停，随时可用 `enable-heal` 恢复）。"
     )
 
 
@@ -955,6 +1313,8 @@ if __name__ == "__main__":
     args = sys.argv[1:]
     explicit_res = None
     explicit_exe = None
+    disable_hours = 24
+    disable_permanent = False
     if "--resources-dir" in args:
         idx = args.index("--resources-dir")
         if idx + 1 < len(args):
@@ -965,6 +1325,17 @@ if __name__ == "__main__":
         if idx + 1 < len(args):
             explicit_exe = args[idx + 1]
             args = args[:idx] + args[idx + 2 :]
+    if "--hours" in args:
+        idx = args.index("--hours")
+        if idx + 1 < len(args):
+            try:
+                disable_hours = int(args[idx + 1])
+            except ValueError:
+                disable_hours = 24
+            args = args[:idx] + args[idx + 2 :]
+    if "--permanent" in args:
+        disable_permanent = True
+        args = [a for a in args if a != "--permanent"]
 
     cmd = args[0] if args else "install"
     if cmd == "status":
@@ -977,9 +1348,19 @@ if __name__ == "__main__":
         cmd_restore(explicit_res)
     elif cmd == "session-hook":
         print(json.dumps(run_session_hook(), ensure_ascii=False))
+    elif cmd == "apply-on-exit":
+        res = explicit_res or find_resources_dir()
+        if res:
+            cmd_apply_on_exit(res)
     elif cmd == "apply-and-restart":
         res = explicit_res or find_resources_dir()
         if res:
             cmd_apply_and_restart(res, explicit_exe)
+    elif cmd == "disable-heal":
+        cmd_disable_heal(hours=disable_hours, permanent=disable_permanent, explicit_dir=explicit_res)
+    elif cmd == "enable-heal":
+        cmd_enable_heal()
     else:
-        print(f"未知参数: {cmd} (支持: status, stage, install, restore, session-hook, apply-and-restart)")
+        print(
+            f"未知参数: {cmd} (支持: status, stage, install, restore, session-hook, apply-on-exit, apply-and-restart, disable-heal, enable-heal)"
+        )
