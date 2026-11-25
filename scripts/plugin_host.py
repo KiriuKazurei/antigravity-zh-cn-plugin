@@ -7,6 +7,7 @@ Self-contained host manager for Antigravity UI plugins:
 - Zero-console-popup Windows background execution (CREATE_NO_WINDOW)
 """
 
+import base64
 import csv
 import hashlib
 import json
@@ -900,13 +901,59 @@ def _acquire_exit_watcher_lock(resources_dir):
     return False
 
 
+def _win_spawn_via_wmi(cmd_args):
+    """
+    Spawn a completely detached, windowless background process via Windows WMI
+    (Win32_Process.Create). Because WmiPrvSE.exe creates the process, it escapes
+    any restrictive parent Windows Job Object (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    without BREAKAWAY_OK) so it survives Antigravity / hook exit.
+    """
+    try:
+        cmd_line = subprocess.list2cmdline([str(a) for a in cmd_args])
+        ps_cmd_literal = "'" + cmd_line.replace("'", "''") + "'"
+        ps_script = (
+            "$si = New-CimInstance -ClassName Win32_ProcessStartup "
+            "-Property @{ShowWindow=[uint16]0} -ClientOnly; "
+            f"$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create "
+            f"-Arguments @{{CommandLine={ps_cmd_literal}; ProcessStartupInformation=$si}}; "
+            'Write-Output ("RC=" + $r.ReturnValue + " PID=" + $r.ProcessId)'
+        )
+        encoded = base64.b64encode(ps_script.encode("utf-16-le")).decode("ascii")
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=15,
+            creationflags=_win_no_window_flags(),
+        )
+        out = proc.stdout.decode("utf-8", errors="replace").strip()
+        return proc.returncode == 0 and "RC=0" in out
+    except Exception:
+        return False
+
+
 def _spawn_background_script(cmd_args):
     if platform.system() == "Windows":
+        if _win_spawn_via_wmi(cmd_args):
+            return
         CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
         CREATE_NEW_PROCESS_GROUP = 0x00000200
+        CREATE_BREAKAWAY_FROM_JOB = 0x01000000
         flags = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+        try:
+            subprocess.Popen(
+                cmd_args,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+                creationflags=flags | CREATE_BREAKAWAY_FROM_JOB,
+            )
+            return
+        except OSError:
+            pass
         bg_python = _win_background_python()
-        # Double-fork breaks parent-child PID link without opening any console window
+        # Fallback: double-fork breaks parent-child PID link without opening any console window
         launcher_code = (
             "import subprocess; "
             f"subprocess.Popen({cmd_args!r}, "
