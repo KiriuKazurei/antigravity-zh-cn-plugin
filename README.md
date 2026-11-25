@@ -9,7 +9,7 @@
 如果你正在使用 `Antigravity`，直接复制下面这段提示词发送给 AI 助手即可完成安装：
 
 ```text
-请帮我安装 GitHub 仓库 https://github.com/KiriuKazurei/antigravity-zh-cn-plugin 中的 Antigravity 简体中文汉化插件：将其克隆到用户插件目录 ~/.gemini/config/plugins/antigravity-zh-cn（Windows 为 %USERPROFILE%\.gemini\config\plugins\antigravity-zh-cn），运行其中的 scripts/plugin_host.py install 完成宿主接入并检查状态；若提示 app.asar 正在被占用，请引导我重启或通过脚本完成替换生效。
+请帮我安装 GitHub 仓库 https://github.com/KiriuKazurei/antigravity-zh-cn-plugin 中的 Antigravity 简体中文汉化插件：将其克隆到用户插件目录 ~/.gemini/config/plugins/antigravity-zh-cn（Windows 为 %USERPROFILE%\.gemini\config\plugins\antigravity-zh-cn），运行其中的 scripts/plugin_host.py install 完成宿主接入并检查状态；若提示 app.asar 正在被占用，请引导我重启或通过脚本完成替换生效。全过程你盯着，遇到安装报错、环境差异或兼容性问题请直接排查并修复；如果确认属于插件 Bug 或新版 Antigravity 兼容性问题且有必要的话，请顺手给项目仓库（https://github.com/KiriuKazurei/antigravity-zh-cn-plugin/issues）提交一个 GitHub Issue（附上操作系统、Antigravity 版本、复现步骤与脱敏后的错误日志），帮助项目持续优化兼容性。
 ```
 
 ---
