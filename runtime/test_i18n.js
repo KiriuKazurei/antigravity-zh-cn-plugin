@@ -148,6 +148,14 @@ assert.strictEqual(
 // Ensure chainOnly rules do not trigger on standalone strings
 assert.strictEqual(translate('6 days, 18 hours'), '6 days, 18 hours');
 
+// Validate Antigravity v2.35.1 sentence-case settings & new UI strings
+assert.strictEqual(translate('Enable AI credit overages'), '启用 AI 积分超额使用');
+assert.strictEqual(translate('Automatic check for updates'), '自动检查更新');
+assert.strictEqual(translate('Browser JavaScript execution policy'), '浏览器 JavaScript 执行策略');
+assert.strictEqual(translate('Context and quota indicator'), '上下文与额度指示器');
+assert.strictEqual(translate('Plugin permissions'), '插件权限');
+assert.strictEqual(translate('Type your own answer'), '输入您自己的回答');
+
 // Verify i18n-engine.js translates TEXTAREA attributes (e.g. placeholder) while ignoring TEXTAREA text content
 const fakeDoc = {
   readyState: 'complete',
