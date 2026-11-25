@@ -904,7 +904,7 @@ def _acquire_exit_watcher_lock(resources_dir):
 
 def _win_spawn_via_wmi(cmd_args):
     """
-    Spawn a completely detached, windowless background process via Windows WMI
+    Spawn a completely detached background process via Windows WMI
     (Win32_Process.Create). Because WmiPrvSE.exe creates the process, it escapes
     any restrictive parent Windows Job Object (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
     without BREAKAWAY_OK) so it survives Antigravity / hook exit.
@@ -912,9 +912,12 @@ def _win_spawn_via_wmi(cmd_args):
     try:
         cmd_line = subprocess.list2cmdline([str(a) for a in cmd_args])
         ps_cmd_literal = "'" + cmd_line.replace("'", "''") + "'"
+        exe_base = os.path.basename(str(cmd_args[0])).lower() if cmd_args else ""
+        # pythonw.exe has no console window; avoid SW_HIDE so its tkinter popup is always visible
+        show_val = 5 if exe_base == "pythonw.exe" else 0
         ps_script = (
             "$si = New-CimInstance -ClassName Win32_ProcessStartup "
-            "-Property @{ShowWindow=[uint16]0} -ClientOnly; "
+            f"-Property @{{ShowWindow=[uint16]{show_val}}} -ClientOnly; "
             f"$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create "
             f"-Arguments @{{CommandLine={ps_cmd_literal}; ProcessStartupInformation=$si}}; "
             'Write-Output ("RC=" + $r.ReturnValue + " PID=" + $r.ProcessId)'
@@ -1013,21 +1016,53 @@ def spawn_detached_healer(resources_dir, exe_path):
     _spawn_background_script(cmd_args)
 
 
+def _win_is_process_running_fast(exe_name):
+    """Fast (~15ms), zero-subprocess Windows process check via CreateToolhelp32Snapshot."""
+    import ctypes
+    from ctypes import wintypes
+
+    TH32CS_SNAPPROCESS = 0x00000002
+    INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.POINTER(wintypes.ULONG)),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    snap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if not snap or snap == INVALID_HANDLE_VALUE:
+        raise OSError(f"CreateToolhelp32Snapshot failed: {ctypes.get_last_error()}")
+    try:
+        pe = PROCESSENTRY32W()
+        pe.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        target = exe_name.lower()
+        if kernel32.Process32FirstW(snap, ctypes.byref(pe)):
+            while True:
+                if pe.szExeFile.lower() == target:
+                    return True
+                if not kernel32.Process32NextW(snap, ctypes.byref(pe)):
+                    break
+        return False
+    finally:
+        kernel32.CloseHandle(snap)
+
+
 def is_antigravity_running(default_on_error=True):
     system = platform.system()
     try:
         if system == "Windows":
-            out = subprocess.check_output(
-                ["tasklist", "/FI", "IMAGENAME eq Antigravity.exe", "/FO", "CSV", "/NH"],
-                text=True,
-                stderr=subprocess.DEVNULL,
-                timeout=8,
-                creationflags=_win_no_window_flags(),
-            )
-            for row in csv.reader(out.splitlines()):
-                if len(row) >= 1 and row[0].strip().lower() == "antigravity.exe":
-                    return True
-            return False
+            return _win_is_process_running_fast("Antigravity.exe")
         if system == "Darwin":
             rc = subprocess.run(["pgrep", "-x", "Antigravity"], capture_output=True).returncode
             return rc == 0
@@ -1194,6 +1229,12 @@ def _run_swap_with_popup(resources_dir, asar_path, staged_path, app_ver, loader_
         pos_x = max(0, (screen_w - width) // 2)
         pos_y = max(0, (screen_h - height) // 2)
         root.geometry(f"{width}x{height}+{pos_x}+{pos_y}")
+        root.deiconify()
+        root.lift()
+        try:
+            root.focus_force()
+        except Exception:
+            pass
 
         container = ttk.Frame(root, padding=(20, 16, 20, 16))
         container.pack(fill="both", expand=True)
