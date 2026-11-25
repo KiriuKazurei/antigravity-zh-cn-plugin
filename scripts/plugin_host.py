@@ -18,6 +18,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import threading
 import time
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -935,6 +936,7 @@ def _win_spawn_via_wmi(cmd_args):
 def _spawn_background_script(cmd_args):
     if platform.system() == "Windows":
         if _win_spawn_via_wmi(cmd_args):
+            write_heal_log("Spawned background watcher via WMI (Win32_Process.Create).")
             return
         CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
         CREATE_NEW_PROCESS_GROUP = 0x00000200
@@ -949,6 +951,7 @@ def _spawn_background_script(cmd_args):
                 close_fds=True,
                 creationflags=flags | CREATE_BREAKAWAY_FROM_JOB,
             )
+            write_heal_log("Spawned background watcher via CREATE_BREAKAWAY_FROM_JOB.")
             return
         except OSError:
             pass
@@ -969,6 +972,7 @@ def _spawn_background_script(cmd_args):
             creationflags=flags,
         )
         mid.wait(timeout=3)
+        write_heal_log("Spawned background watcher via double-fork fallback.")
     else:
         subprocess.Popen(
             cmd_args,
@@ -1127,10 +1131,205 @@ def _swap_staged_asar(asar_path, staged_path, retries=25):
     return (False, last_err)
 
 
+def _show_fallback_result_popup(success, title, message):
+    """Fallback native OS dialog when tkinter is unavailable."""
+    system = platform.system()
+    try:
+        if system == "Windows":
+            import ctypes
+            # MB_OK (0x0) | MB_TOPMOST (0x40000) | MB_SETFOREGROUND (0x10000) | ICON
+            flags = 0x50000 | (0x40 if success else 0x10)
+            ctypes.windll.user32.MessageBoxW(0, str(message), str(title), flags)
+        elif system == "Darwin":
+            safe_msg = str(message).replace("\\", "\\\\").replace('"', '\\"')
+            safe_title = str(title).replace("\\", "\\\\").replace('"', '\\"')
+            subprocess.run(
+                ["osascript", "-e", f'display dialog "{safe_msg}" with title "{safe_title}" buttons {{"确定"}} default button "确定"'],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+            )
+        else:
+            icon = "info" if success else "error"
+            if shutil.which("zenity"):
+                subprocess.run(
+                    ["zenity", f"--{icon}", f"--title={title}", f"--text={message}"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=30,
+                )
+            elif shutil.which("notify-send"):
+                subprocess.run(
+                    ["notify-send", str(title), str(message)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                )
+    except Exception:
+        pass
+
+
+def _run_swap_with_popup(resources_dir, asar_path, staged_path, app_ver, loader_ver_str, auto_relaunch=False, exe_path=None):
+    """
+    Display a clean topmost progress & result popup while applying app.asar.staged -> app.asar.
+    Returns (replaced: bool, err: Any, relaunched: bool).
+    """
+    title_text = "Antigravity 汉化插件自愈"
+    ver_label = f"v{app_ver}" if app_ver else "当前版本"
+    target_exe = exe_path or find_antigravity_exe(resources_dir)
+    result = {"replaced": False, "err": None, "relaunched": False}
+
+    try:
+        import tkinter as tk
+        from tkinter import ttk
+
+        root = tk.Tk()
+        root.title(title_text)
+        root.resizable(False, False)
+        root.attributes("-topmost", True)
+
+        width, height = 430, 195
+        screen_w = root.winfo_screenwidth()
+        screen_h = root.winfo_screenheight()
+        pos_x = max(0, (screen_w - width) // 2)
+        pos_y = max(0, (screen_h - height) // 2)
+        root.geometry(f"{width}x{height}+{pos_x}+{pos_y}")
+
+        container = ttk.Frame(root, padding=(20, 16, 20, 16))
+        container.pack(fill="both", expand=True)
+
+        status_var = tk.StringVar(value="正在安装汉化插件宿主...")
+        detail_var = tk.StringVar(
+            value=f"正在为 Antigravity {ver_label} 覆盖更新 app.asar（宿主 {loader_ver_str}），\n请稍候（通常仅需 1~2 秒），期间请勿立即重新打开软件。"
+        )
+
+        status_lbl = tk.Label(
+            container,
+            textvariable=status_var,
+            font=("Microsoft YaHei UI", 11, "bold"),
+            anchor="w",
+            justify="left",
+        )
+        status_lbl.pack(fill="x", pady=(0, 8))
+
+        detail_lbl = tk.Label(
+            container,
+            textvariable=detail_var,
+            font=("Microsoft YaHei UI", 9),
+            anchor="w",
+            justify="left",
+            wraplength=385,
+        )
+        detail_lbl.pack(fill="x", pady=(0, 12))
+
+        pbar = ttk.Progressbar(container, mode="indeterminate", length=385)
+        pbar.pack(fill="x", pady=(0, 12))
+        pbar.start(12)
+
+        btn_frame = ttk.Frame(container)
+        btn_frame.pack(fill="x", side="bottom")
+
+        def close_window():
+            try:
+                root.destroy()
+            except Exception:
+                pass
+
+        def launch_and_close():
+            if target_exe and os.path.exists(target_exe):
+                relaunch_antigravity(target_exe)
+                result["relaunched"] = True
+            close_window()
+
+        def clear_buttons():
+            for child in btn_frame.winfo_children():
+                child.destroy()
+
+        def start_swap_worker():
+            clear_buttons()
+            status_lbl.config(fg="#1f2937")
+            status_var.set("正在安装汉化插件宿主...")
+            detail_var.set(
+                f"正在为 Antigravity {ver_label} 覆盖更新 app.asar（宿主 {loader_ver_str}），\n请稍候（通常仅需 1~2 秒），期间请勿立即重新打开软件。"
+            )
+            if not pbar.winfo_ismapped():
+                pbar.pack(fill="x", pady=(0, 12), before=btn_frame)
+            pbar.start(12)
+
+            def _worker():
+                replaced, err = _swap_staged_asar(asar_path, staged_path, retries=25)
+                result["replaced"] = replaced
+                result["err"] = err
+
+                def _on_done():
+                    try:
+                        pbar.stop()
+                        pbar.pack_forget()
+                    except Exception:
+                        pass
+                    clear_buttons()
+                    if replaced:
+                        status_lbl.config(fg="#15803d")
+                        status_var.set("✓ 汉化插件宿主安装成功！")
+                        if auto_relaunch and target_exe and os.path.exists(target_exe):
+                            detail_var.set(
+                                f"已成功更新 Antigravity {ver_label}（宿主 {loader_ver_str}），正在自动重新启动 Antigravity..."
+                            )
+                            ttk.Button(btn_frame, text="立即启动", command=launch_and_close).pack(side="right", padx=(6, 0))
+                            ttk.Button(btn_frame, text="关闭", command=close_window).pack(side="right")
+                            root.after(1500, launch_and_close)
+                        else:
+                            detail_var.set(
+                                f"已成功更新 Antigravity {ver_label}（宿主 {loader_ver_str}）。\n点击下方按钮或手动重新打开 Antigravity 即可恢复简体中文界面。"
+                            )
+                            ttk.Button(btn_frame, text="关闭", command=close_window).pack(side="right", padx=(6, 0))
+                            if target_exe and os.path.exists(target_exe):
+                                ttk.Button(btn_frame, text="立即启动 Antigravity", command=launch_and_close).pack(side="right")
+                    else:
+                        status_lbl.config(fg="#b91c1c")
+                        status_var.set("✕ 汉化插件宿主安装失败")
+                        detail_var.set(
+                            f"覆盖 app.asar 失败：{err}\n请确认 Antigravity 已完全退出（包括系统托盘），再点击「重试」。"
+                        )
+                        ttk.Button(btn_frame, text="关闭", command=close_window).pack(side="right", padx=(6, 0))
+                        ttk.Button(btn_frame, text="重试", command=start_swap_worker).pack(side="right")
+
+                try:
+                    root.after(0, _on_done)
+                except Exception:
+                    pass
+
+            threading.Thread(target=_worker, daemon=True).start()
+
+        root.after(50, start_swap_worker)
+        root.mainloop()
+        return (result["replaced"], result["err"], result["relaunched"])
+    except Exception as ui_exc:
+        write_heal_log(f"Tkinter popup unavailable ({ui_exc}); falling back to native dialog.")
+        replaced, err = _swap_staged_asar(asar_path, staged_path, retries=25)
+        if replaced:
+            _show_fallback_result_popup(
+                True,
+                title_text,
+                f"已成功为 Antigravity {ver_label} 安装汉化插件宿主（{loader_ver_str}）。\n现在可以重新打开 Antigravity 恢复简体中文界面。",
+            )
+            if auto_relaunch and target_exe and os.path.exists(target_exe):
+                relaunch_antigravity(target_exe)
+                return (True, None, True)
+            return (True, None, False)
+        _show_fallback_result_popup(
+            False,
+            title_text,
+            f"覆盖 app.asar 失败：{err}\n请确认 Antigravity 已完全退出（包括系统托盘）后重试。",
+        )
+        return (False, err, False)
+
+
 def cmd_apply_on_exit(resources_dir):
     """
     Non-disruptive exit watcher: waits silently until the user manually closes Antigravity,
-    then replaces app.asar with app.asar.staged. Never kills or restarts Antigravity.
+    then displays a progress/result popup while replacing app.asar with app.asar.staged.
+    Never kills Antigravity.
     """
     if not _acquire_exit_watcher_lock(resources_dir):
         return
@@ -1149,7 +1348,7 @@ def cmd_apply_on_exit(resources_dir):
                 write_heal_log("Exit watcher stopped: app.asar.staged no longer present.")
                 return
             if not is_antigravity_running(default_on_error=True):
-                time.sleep(1.0)
+                time.sleep(0.3)
                 if is_antigravity_running(default_on_error=True):
                     continue
                 if is_auto_heal_disabled() or not os.path.exists(staged_path):
@@ -1178,10 +1377,18 @@ def cmd_apply_on_exit(resources_dir):
                     except Exception:
                         pass
                     return
-                replaced, err = _swap_staged_asar(asar_path, staged_path, retries=20)
+                loader_ver_str = format_loader_version(staged_ver)
+                replaced, err, _ = _run_swap_with_popup(
+                    resources_dir,
+                    asar_path,
+                    staged_path,
+                    staged_app_ver or active_app_ver,
+                    loader_ver_str,
+                    auto_relaunch=False,
+                )
                 if replaced:
                     ver = get_asar_version(asar_path)
-                    write_heal_log(f"Successfully applied app.asar on manual exit (v{ver}, loader {format_loader_version(staged_ver)}).")
+                    write_heal_log(f"Successfully applied app.asar on manual exit (v{ver}, loader {loader_ver_str}).")
                     state = load_heal_state()
                     state["last_success_ts"] = int(time.time())
                     state["last_success_version"] = ver
@@ -1192,8 +1399,10 @@ def cmd_apply_on_exit(resources_dir):
                     continue
                 write_heal_log(f"Failed to replace app.asar on manual exit: {err}")
                 return
-            time.sleep(2.0)
+            time.sleep(0.5)
         write_heal_log("Exit watcher timed out after 24h without Antigravity exit.")
+    except Exception as exc:
+        write_heal_log(f"Exit watcher unexpected error: {exc}")
     finally:
         try:
             lock_data = read_json_safe(GLOBAL_EXIT_WATCHER_LOCK, is_jsonc=False)
@@ -1215,7 +1424,20 @@ def cmd_apply_and_restart(resources_dir, exe_path=None):
     time.sleep(1.0)
     polite_close_antigravity()
 
-    replaced, last_err = _swap_staged_asar(asar_path, staged_path, retries=25)
+    staged_app_ver = get_asar_version(staged_path) or get_asar_version(asar_path)
+    staged_ver = get_installed_loader_version(staged_path) or (0, 0, 0)
+    loader_ver_str = format_loader_version(staged_ver)
+    target_exe = exe_path or find_antigravity_exe(resources_dir)
+
+    replaced, last_err, relaunched = _run_swap_with_popup(
+        resources_dir,
+        asar_path,
+        staged_path,
+        staged_app_ver,
+        loader_ver_str,
+        auto_relaunch=True,
+        exe_path=target_exe,
+    )
     if not replaced:
         write_heal_log(f"Failed to replace app.asar: {last_err}")
         return
@@ -1227,9 +1449,8 @@ def cmd_apply_and_restart(resources_dir, exe_path=None):
     state["last_success_version"] = ver
     save_heal_state(state)
 
-    if not exe_path:
-        exe_path = find_antigravity_exe(resources_dir)
-    relaunch_antigravity(exe_path)
+    if not relaunched:
+        relaunch_antigravity(target_exe)
 
 
 def make_user_notice(markdown):
