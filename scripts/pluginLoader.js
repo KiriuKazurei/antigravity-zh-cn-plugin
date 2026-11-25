@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-const PLUGIN_LOADER_VERSION = "2.2.0";
+const PLUGIN_LOADER_VERSION = "2.3.0";
 exports.PLUGIN_LOADER_VERSION = PLUGIN_LOADER_VERSION;
 exports.attachWebContents = attachWebContents;
 exports.translateTrayItem = translateTrayItem;
@@ -299,8 +299,26 @@ try{
     GetCascadeTrajectoryExecutorMetadatas:1,
     GetTrajectoryTurns:1,
     SendUserCascadeMessage:1,
-    StreamUserTrajectoryReactiveUpdates:1
+    StreamUserTrajectoryReactiveUpdates:1,
+    StreamCascadeReactiveUpdates:1
   };
+  var WS_CASCADE_RE = /GetCascadeTrajectorySteps|GetCascadeTrajectoryGeneratorMetadata|GetCascadeTrajectoryExecutorMetadatas|GetCascadeTrajectory|GetTrajectoryTurns|SendUserCascadeMessage|StreamCascadeReactiveUpdates|StreamUserTrajectoryReactiveUpdates/;
+  function toAsciiPreview(body, limit){
+    if(typeof body === 'string') return body;
+    if(body instanceof ArrayBuffer){
+      body = new Uint8Array(body, 0, Math.min(body.byteLength, limit || 512));
+    }else if(typeof Uint8Array !== 'undefined' && (body instanceof Uint8Array || ArrayBuffer.isView(body))){
+      body = new Uint8Array(body.buffer, body.byteOffset, Math.min(body.byteLength, limit || 512));
+    }else{
+      return '';
+    }
+    var txt = '';
+    for(var i=0;i<body.length;i++){
+      var ch = body[i];
+      txt += (ch >= 32 && ch <= 126) ? String.fromCharCode(ch) : ' ';
+    }
+    return txt;
+  }
   function scanCascadeId(method, body){
     if(!method || !CASCADE_METHODS[method] || !body) return;
     try{
@@ -315,14 +333,9 @@ try{
           var m = body.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
           if(m) cid = m[0];
         }
-      }else if(typeof Uint8Array !== 'undefined' && (body instanceof Uint8Array || ArrayBuffer.isView(body))){
-        var view = new Uint8Array(body.buffer, body.byteOffset, Math.min(body.byteLength, 512));
-        var txt = '';
-        for(var i=0;i<view.length;i++){
-          var ch = view[i];
-          txt += (ch >= 32 && ch <= 126) ? String.fromCharCode(ch) : ' ';
-        }
-        var mb = txt.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+      }else{
+        var txt = toAsciiPreview(body, 512);
+        var mb = txt && txt.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
         if(mb) cid = mb[0];
       }
       if(cid && window.__AGY_CAPTURED_CASCADE_ID__ !== cid){
@@ -429,6 +442,23 @@ try{
       }catch(_){}
       return origSend.apply(this, arguments);
     };
+  }
+  if(typeof window.WebSocket === 'function' && window.WebSocket.prototype && !window.__AGY_WS_RPC_TAP__){
+    window.__AGY_WS_RPC_TAP__ = true;
+    var origWsSend = window.WebSocket.prototype.send;
+    if(typeof origWsSend === 'function'){
+      window.WebSocket.prototype.send = function(body){
+        try{
+          var wsUrl = typeof this.url === 'string' ? this.url : '';
+          if(!wsUrl || wsUrl.indexOf('connect-websocket') !== -1){
+            var preview = toAsciiPreview(body, 768);
+            var mm = preview && preview.match(WS_CASCADE_RE);
+            if(mm) scanCascadeId(mm[0], preview);
+          }
+        }catch(_){}
+        return origWsSend.apply(this, arguments);
+      };
+    }
   }
 }catch(_){}
 })();`;
