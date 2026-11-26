@@ -703,7 +703,16 @@
     "Model credits": "模型积分",
     "Reset to default": "恢复默认",
     "Show all": "显示全部",
-    "Show less": "收起"
+    "Show less": "收起",
+
+    "Configure built-in browser, link opening, and browser subagent preferences.": "配置内置浏览器、链接打开方式与浏览器 Subagent 偏好设置。",
+    "Folder where files downloaded in the built-in browser are saved.": "内置浏览器下载文件的默认保存目录。",
+    "Reset": "重置",
+    "Change...": "更改...",
+    "Clear visited URLs and autocomplete suggestions from the built-in browser.": "清除内置浏览器的访问历史与地址栏自动补全建议。",
+    "Clear": "清除",
+    "Browser Subagent": "浏览器 Subagent",
+    "Configure allowed and denied URLs for the browser subagent. It runs in the built-in browser, so no separate browser install is needed.": "配置浏览器 Subagent 允许或拒绝访问的 URL。它运行在内置浏览器中，无需单独安装浏览器。"
   },
   "patterns": [
     {
