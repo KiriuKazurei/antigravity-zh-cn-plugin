@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-const PLUGIN_LOADER_VERSION = "2.3.0";
+const PLUGIN_LOADER_VERSION = "2.4.1";
 exports.PLUGIN_LOADER_VERSION = PLUGIN_LOADER_VERSION;
 exports.attachWebContents = attachWebContents;
 exports.translateTrayItem = translateTrayItem;
@@ -13,13 +13,16 @@ exports.parseKbMarkdownMeta = parseKbMarkdownMeta;
 exports.resolveSafeKbPath = resolveSafeKbPath;
 exports.scanKbVault = scanKbVault;
 exports.searchKbVault = searchKbVault;
+exports.resolveSystemPath = resolveSystemPath;
 
+const child_process = require("child_process");
 const crypto = require("crypto");
 const electron_1 = require("electron");
 const fs = require("fs");
 const http = require("http");
 const os = require("os");
 const path = require("path");
+const url_1 = require("url");
 
 function stripJsonComments(text) {
     let out = "";
@@ -1451,6 +1454,517 @@ function ensureKbBridgeStarted(pluginPath) {
     return kbBridgeRuntime.startPromise;
 }
 
+// ==================== 通用系统路径与右键菜单桥接 (System Bridge) ====================
+
+function expandEnvAndHome(rawPath) {
+    if (typeof rawPath !== "string") {
+        return "";
+    }
+    let s = rawPath.trim();
+    if (!s) {
+        return "";
+    }
+    if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'")) || (s.startsWith("`") && s.endsWith("`"))) {
+        s = s.slice(1, -1).trim();
+    }
+    if (s.startsWith("<") && s.endsWith(">")) {
+        s = s.slice(1, -1).trim();
+    }
+    if (/^file:\/\//i.test(s)) {
+        const stripped = s.split("#")[0].split("?")[0];
+        try {
+            s = url_1.fileURLToPath(stripped);
+        }
+        catch {
+            let body = stripped.replace(/^file:\/\//i, "");
+            try {
+                body = decodeURIComponent(body);
+            }
+            catch {
+                // Keep raw body if malformed percent encoding
+            }
+            if (/^\/[A-Za-z]:/.test(body)) {
+                body = body.slice(1);
+            }
+            s = body;
+        }
+    }
+    else {
+        // 剥离尾部行号/列号后缀，例如 file.ts:42:10、file.py#L10-L20、file.cs(12,4)
+        s = s.replace(/#L\d+(?:-L?\d+)?$/i, "");
+        s = s.replace(/\(\d+(?:,\s*\d+)?\)$/, "");
+        const colonMatch = s.match(/^(.+?):(\d+)(?::(\d+))?$/);
+        if (colonMatch && colonMatch[1] && !/^[A-Za-z]$/.test(colonMatch[1])) {
+            s = colonMatch[1];
+        }
+    }
+
+    // 展开 Windows %VAR% 环境变量（仅允许已知安全路径变量）
+    const safeEnvMap = {
+        USERPROFILE: os.homedir(),
+        HOME: os.homedir(),
+        APPDATA: process.env.APPDATA || "",
+        LOCALAPPDATA: process.env.LOCALAPPDATA || "",
+        TEMP: process.env.TEMP || os.tmpdir(),
+        TMP: process.env.TMP || os.tmpdir(),
+        PROGRAMFILES: process.env.PROGRAMFILES || "",
+        WINDIR: process.env.WINDIR || "",
+    };
+    s = s.replace(/%([A-Za-z_][A-Za-z0-9_]*)%/g, (m, key) => {
+        const val = safeEnvMap[String(key).toUpperCase()];
+        return val ? val : m;
+    });
+
+    if (s === "~" || s.startsWith("~/") || s.startsWith("~\\")) {
+        s = path.join(os.homedir(), s.slice(1));
+    }
+
+    return s;
+}
+
+function resolveSystemPath(rawPath, options = {}) {
+    if (typeof rawPath !== "string" || !rawPath.trim() || rawPath.includes("\0")) {
+        return {
+            ok: false,
+            error: "Empty or invalid path",
+            input: rawPath || "",
+            resolvedPath: "",
+            exists: false,
+            isFile: false,
+            isDirectory: false,
+            parentDir: "",
+            parentExists: false,
+            nearestExistingParent: "",
+        };
+    }
+
+    const expanded = expandEnvAndHome(rawPath);
+    if (!expanded) {
+        return {
+            ok: false,
+            error: "Empty path after normalization",
+            input: rawPath,
+            resolvedPath: "",
+            exists: false,
+            isFile: false,
+            isDirectory: false,
+            parentDir: "",
+            parentExists: false,
+            nearestExistingParent: "",
+        };
+    }
+
+    let resolvedPath = "";
+    const isWinAbs = /^[A-Za-z]:[\\/]/.test(expanded) || /^\\\\[^\\]+\\[^\\]+/.test(expanded);
+    const isPosixAbs = expanded.startsWith("/");
+    if (isWinAbs || isPosixAbs || path.isAbsolute(expanded)) {
+        resolvedPath = path.normalize(expanded);
+    }
+    else if (typeof options.baseDir === "string" && options.baseDir.trim()) {
+        const base = expandEnvAndHome(options.baseDir);
+        resolvedPath = path.resolve(base, expanded);
+    }
+    else {
+        return {
+            ok: false,
+            error: "Relative path requires baseDir",
+            input: rawPath,
+            resolvedPath: expanded,
+            exists: false,
+            isFile: false,
+            isDirectory: false,
+            parentDir: "",
+            parentExists: false,
+            nearestExistingParent: "",
+        };
+    }
+
+    let exists = false;
+    let isFile = false;
+    let isDirectory = false;
+    try {
+        if (fs.existsSync(resolvedPath)) {
+            const st = fs.statSync(resolvedPath);
+            exists = true;
+            isFile = st.isFile();
+            isDirectory = st.isDirectory();
+        }
+    }
+    catch {
+        exists = false;
+    }
+
+    const parentDir = path.dirname(resolvedPath);
+    let parentExists = false;
+    try {
+        parentExists = Boolean(parentDir && fs.existsSync(parentDir) && fs.statSync(parentDir).isDirectory());
+    }
+    catch {
+        parentExists = false;
+    }
+
+    let nearestExistingParent = "";
+    if (!exists) {
+        let cur = parentDir;
+        for (let depth = 0; depth < 8 && cur; depth++) {
+            try {
+                if (fs.existsSync(cur) && fs.statSync(cur).isDirectory()) {
+                    nearestExistingParent = cur;
+                    break;
+                }
+            }
+            catch {
+                break;
+            }
+            const up = path.dirname(cur);
+            if (!up || up === cur) {
+                break;
+            }
+            cur = up;
+        }
+    }
+
+    return {
+        ok: true,
+        input: rawPath,
+        resolvedPath,
+        exists,
+        isFile,
+        isDirectory,
+        parentDir,
+        parentExists,
+        nearestExistingParent,
+    };
+}
+
+function readContextMenuConfigSafe(pluginPath) {
+    const fallback = {
+        version: 1,
+        disabledModules: [],
+        customActions: [],
+        prefs: {
+            openFolderDirectly: true,
+            showPathPreview: true,
+            enableOnInputs: true,
+        },
+    };
+    if (!pluginPath) {
+        return fallback;
+    }
+    const cfgPath = path.join(pluginPath, "runtime", "context-menu-config.json");
+    const parsed = readJsonSafe(cfgPath, false);
+    if (!parsed || typeof parsed !== "object") {
+        return fallback;
+    }
+    return {
+        ...fallback,
+        ...parsed,
+        disabledModules: Array.isArray(parsed.disabledModules) ? parsed.disabledModules : fallback.disabledModules,
+        customActions: Array.isArray(parsed.customActions) ? parsed.customActions : fallback.customActions,
+        prefs: {
+            ...fallback.prefs,
+            ...(parsed.prefs && typeof parsed.prefs === "object" ? parsed.prefs : {}),
+        },
+    };
+}
+
+function writeContextMenuConfigAtomic(pluginPath, data) {
+    if (!pluginPath || !data || typeof data !== "object") {
+        return false;
+    }
+    try {
+        const runtimeDir = path.join(pluginPath, "runtime");
+        fs.mkdirSync(runtimeDir, { recursive: true });
+        const dst = path.join(runtimeDir, "context-menu-config.json");
+        const tmp = `${dst}.${process.pid}.tmp`;
+        fs.writeFileSync(tmp, JSON.stringify(data, null, 2), "utf8");
+        if (fs.existsSync(dst)) {
+            fs.unlinkSync(dst);
+        }
+        fs.renameSync(tmp, dst);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+
+function launchTerminalAtDir(targetDir, options = {}) {
+    const command = typeof options.command === "string" ? options.command.trim() : "";
+    const resolvedDir = targetDir && fs.existsSync(targetDir) ? targetDir : os.homedir();
+    try {
+        if (process.platform === "win32") {
+            const escapedDir = resolvedDir.replace(/'/g, "''");
+            if (command) {
+                const b64Cmd = Buffer.from(
+                    `Set-Location -LiteralPath '${escapedDir}'; ${command}`,
+                    "utf16le"
+                ).toString("base64");
+                const child = child_process.spawn(
+                    "powershell.exe",
+                    [
+                        "-NoProfile",
+                        "-WindowStyle",
+                        "Hidden",
+                        "-Command",
+                        `if (Get-Command wt.exe -ErrorAction SilentlyContinue) { Start-Process wt.exe -ArgumentList @('-d', '${escapedDir}', 'powershell.exe', '-NoExit', '-EncodedCommand', '${b64Cmd}') } else { Start-Process powershell.exe -ArgumentList @('-NoExit', '-EncodedCommand', '${b64Cmd}') }`,
+                    ],
+                    { detached: true, stdio: "ignore", windowsHide: true }
+                );
+                child.unref();
+                return { ok: true, dir: resolvedDir, command };
+            }
+            const child = child_process.spawn(
+                "powershell.exe",
+                [
+                    "-NoProfile",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-Command",
+                    `if (Get-Command wt.exe -ErrorAction SilentlyContinue) { Start-Process wt.exe -ArgumentList @('-d', '${escapedDir}') } else { Start-Process powershell.exe -ArgumentList @('-NoExit', '-Command', "Set-Location -LiteralPath '${escapedDir}'") }`,
+                ],
+                { detached: true, stdio: "ignore", windowsHide: true }
+            );
+            child.unref();
+            return { ok: true, dir: resolvedDir };
+        }
+        if (process.platform === "darwin") {
+            const child = child_process.spawn("open", ["-a", "Terminal", resolvedDir], {
+                detached: true,
+                stdio: "ignore",
+            });
+            child.unref();
+            return { ok: true, dir: resolvedDir, command };
+        }
+        const child = child_process.spawn("x-terminal-emulator", [], {
+            cwd: resolvedDir,
+            detached: true,
+            stdio: "ignore",
+        });
+        child.unref();
+        return { ok: true, dir: resolvedDir, command };
+    }
+    catch (err) {
+        return { ok: false, error: String(err && err.message ? err.message : err) };
+    }
+}
+
+const sysBridgeRuntime = {
+    server: null,
+    port: 0,
+    token: crypto.randomBytes(24).toString("hex"),
+    pluginPath: null,
+    startPromise: null,
+};
+
+function sendSysJson(res, status, payload, origin) {
+    const headers = {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": "no-store",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, x-agy-sys-token",
+    };
+    if (origin && isHubUiUrl(origin)) {
+        headers["Access-Control-Allow-Origin"] = origin;
+    }
+    else {
+        headers["Access-Control-Allow-Origin"] = "http://127.0.0.1";
+    }
+    res.writeHead(status, headers);
+    res.end(JSON.stringify(payload));
+}
+
+async function handleSysBridgeRequest(req, res) {
+    const origin = typeof req.headers.origin === "string" ? req.headers.origin : "";
+    if (req.method === "OPTIONS") {
+        sendSysJson(res, 204, {}, origin);
+        return;
+    }
+    const token = req.headers["x-agy-sys-token"];
+    if (token !== sysBridgeRuntime.token) {
+        sendSysJson(res, 403, { ok: false, error: "Unauthorized" }, origin);
+        return;
+    }
+
+    const reqUrl = (req.url || "/").split("?")[0];
+    try {
+        if (req.method === "GET" && reqUrl === "/health") {
+            sendSysJson(
+                res,
+                200,
+                {
+                    ok: true,
+                    platform: process.platform,
+                    homeDir: os.homedir(),
+                    pluginPath: sysBridgeRuntime.pluginPath || "",
+                },
+                origin
+            );
+            return;
+        }
+        if (req.method !== "POST") {
+            sendSysJson(res, 405, { ok: false, error: "Method not allowed" }, origin);
+            return;
+        }
+        const body = await readHttpJsonBody(req);
+
+        if (reqUrl === "/sys/config/get") {
+            sendSysJson(res, 200, { ok: true, config: readContextMenuConfigSafe(sysBridgeRuntime.pluginPath) }, origin);
+            return;
+        }
+        if (reqUrl === "/sys/config/save") {
+            const current = readContextMenuConfigSafe(sysBridgeRuntime.pluginPath);
+            const next = { ...current, ...(body && typeof body.config === "object" ? body.config : body) };
+            const ok = writeContextMenuConfigAtomic(sysBridgeRuntime.pluginPath, next);
+            sendSysJson(res, ok ? 200 : 500, { ok, config: next }, origin);
+            return;
+        }
+        if (reqUrl === "/sys/stat") {
+            const info = resolveSystemPath(body.path, { baseDir: body.baseDir });
+            sendSysJson(res, 200, info, origin);
+            return;
+        }
+        if (reqUrl === "/sys/reveal") {
+            if (!electron_1 || !electron_1.shell) {
+                sendSysJson(res, 501, { ok: false, error: "Electron shell unavailable" }, origin);
+                return;
+            }
+            const info = resolveSystemPath(body.path, { baseDir: body.baseDir });
+            if (!info.ok) {
+                sendSysJson(res, 400, info, origin);
+                return;
+            }
+            if (info.exists) {
+                if (info.isDirectory && body.mode !== "select") {
+                    const errMsg = await electron_1.shell.openPath(info.resolvedPath);
+                    if (errMsg) {
+                        sendSysJson(res, 500, { ok: false, error: errMsg, resolvedPath: info.resolvedPath }, origin);
+                        return;
+                    }
+                    sendSysJson(res, 200, { ok: true, action: "openDirectory", resolvedPath: info.resolvedPath }, origin);
+                    return;
+                }
+                electron_1.shell.showItemInFolder(info.resolvedPath);
+                sendSysJson(res, 200, { ok: true, action: "showItemInFolder", resolvedPath: info.resolvedPath }, origin);
+                return;
+            }
+            if (info.nearestExistingParent && body.fallbackToParent !== false) {
+                const errMsg = await electron_1.shell.openPath(info.nearestExistingParent);
+                if (errMsg) {
+                    sendSysJson(res, 500, { ok: false, error: errMsg, resolvedPath: info.nearestExistingParent }, origin);
+                    return;
+                }
+                sendSysJson(
+                    res,
+                    200,
+                    {
+                        ok: true,
+                        action: "openParent",
+                        fallback: true,
+                        resolvedPath: info.nearestExistingParent,
+                        requestedPath: info.resolvedPath,
+                    },
+                    origin
+                );
+                return;
+            }
+            sendSysJson(res, 404, { ok: false, error: "Path not found", resolvedPath: info.resolvedPath }, origin);
+            return;
+        }
+        if (reqUrl === "/sys/open") {
+            if (!electron_1 || !electron_1.shell) {
+                sendSysJson(res, 501, { ok: false, error: "Electron shell unavailable" }, origin);
+                return;
+            }
+            const info = resolveSystemPath(body.path, { baseDir: body.baseDir });
+            if (!info.ok || !info.exists) {
+                sendSysJson(res, 404, { ok: false, error: "Path not found", resolvedPath: info.resolvedPath }, origin);
+                return;
+            }
+            const errMsg = await electron_1.shell.openPath(info.resolvedPath);
+            if (errMsg) {
+                sendSysJson(res, 500, { ok: false, error: errMsg, resolvedPath: info.resolvedPath }, origin);
+                return;
+            }
+            sendSysJson(res, 200, { ok: true, action: "openPath", resolvedPath: info.resolvedPath }, origin);
+            return;
+        }
+        if (reqUrl === "/sys/open-terminal") {
+            const command = typeof body.command === "string" ? body.command.trim() : "";
+            let targetDir = os.homedir();
+            if (typeof body.path === "string" && body.path.trim()) {
+                const info = resolveSystemPath(body.path, { baseDir: body.baseDir });
+                if (!info.ok) {
+                    if (!command) {
+                        sendSysJson(res, 400, info, origin);
+                        return;
+                    }
+                }
+                else {
+                    targetDir = info.exists
+                        ? (info.isDirectory ? info.resolvedPath : info.parentDir)
+                        : (info.nearestExistingParent || os.homedir());
+                }
+            }
+            const launched = launchTerminalAtDir(targetDir, { command });
+            sendSysJson(res, launched.ok ? 200 : 500, launched, origin);
+            return;
+        }
+
+        sendSysJson(res, 404, { ok: false, error: "Unknown route" }, origin);
+    }
+    catch (err) {
+        sendSysJson(res, 500, { ok: false, error: String(err && err.message ? err.message : err) }, origin);
+    }
+}
+
+function ensureSysBridgeStarted(pluginPath) {
+    if (pluginPath) {
+        sysBridgeRuntime.pluginPath = pluginPath;
+    }
+    if (sysBridgeRuntime.port > 0 && sysBridgeRuntime.server) {
+        return Promise.resolve({
+            url: `http://127.0.0.1:${sysBridgeRuntime.port}`,
+            token: sysBridgeRuntime.token,
+            platform: process.platform,
+            homeDir: os.homedir(),
+            pluginPath: sysBridgeRuntime.pluginPath || "",
+        });
+    }
+    if (sysBridgeRuntime.startPromise) {
+        return sysBridgeRuntime.startPromise;
+    }
+    sysBridgeRuntime.startPromise = new Promise((resolve) => {
+        try {
+            const server = http.createServer((req, res) => {
+                void handleSysBridgeRequest(req, res);
+            });
+            server.on("error", () => {
+                resolve(null);
+            });
+            server.listen(0, "127.0.0.1", () => {
+                const addr = server.address();
+                sysBridgeRuntime.server = server;
+                sysBridgeRuntime.port = addr && typeof addr === "object" ? addr.port : 0;
+                if (typeof server.unref === "function") {
+                    server.unref();
+                }
+                resolve({
+                    url: `http://127.0.0.1:${sysBridgeRuntime.port}`,
+                    token: sysBridgeRuntime.token,
+                    platform: process.platform,
+                    homeDir: os.homedir(),
+                    pluginPath: sysBridgeRuntime.pluginPath || "",
+                });
+            });
+        }
+        catch {
+            resolve(null);
+        }
+    });
+    return sysBridgeRuntime.startPromise;
+}
+
 function attachWebContents(contents) {
     if (!contents || typeof contents.on !== "function") {
         return;
@@ -1539,6 +2053,9 @@ function attachWebContents(contents) {
                 const kbBridgeInfo = p.dirName === "antigravity-kb"
                     ? await ensureKbBridgeStarted(p.pluginPath)
                     : null;
+                const sysBridgeInfo = p.dirName === "antigravity-context-menu"
+                    ? await ensureSysBridgeStarted(p.pluginPath)
+                    : null;
                 for (const script of p.uiScripts) {
                     const meta = JSON.stringify({ id: p.dirName, rel: script.rel, appVersion });
                     const historyInitStmt = initHistory
@@ -1547,7 +2064,10 @@ function attachWebContents(contents) {
                     const kbBridgeStmt = kbBridgeInfo
                         ? `window.__AGY_KB_BRIDGE__ = ${JSON.stringify(kbBridgeInfo)};\n`
                         : "";
-                    const widgetCode = `(function(){\ntry{\nwindow.__AGY_PLUGIN_META__ = ${meta};\n${historyInitStmt}${kbBridgeStmt}${script.code}\n}catch(err){console.warn('[AgyPluginLoader]', err);}\n})();`;
+                    const sysBridgeStmt = sysBridgeInfo
+                        ? `window.__AGY_SYSTEM_BRIDGE__ = ${JSON.stringify(sysBridgeInfo)};\n`
+                        : "";
+                    const widgetCode = `(function(){\ntry{\nwindow.__AGY_PLUGIN_META__ = ${meta};\n${historyInitStmt}${kbBridgeStmt}${sysBridgeStmt}${script.code}\n}catch(err){console.warn('[AgyPluginLoader]', err);}\n})();`;
                     void Promise.resolve(contents.executeJavaScript(widgetCode, true))
                         .then(() => writePluginLog(p.pluginPath, `Injected UI script ${p.dirName}:${script.rel} (app v${appVersion}) into ${url}`))
                         .catch((err) => writePluginLog(p.pluginPath, `Inject UI script error for ${p.dirName}:${script.rel} (app v${appVersion}): ${err}`));
