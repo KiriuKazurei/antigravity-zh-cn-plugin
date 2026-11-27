@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-const PLUGIN_LOADER_VERSION = "2.4.1";
+const PLUGIN_LOADER_VERSION = "2.5.2";
 exports.PLUGIN_LOADER_VERSION = PLUGIN_LOADER_VERSION;
 exports.attachWebContents = attachWebContents;
 exports.translateTrayItem = translateTrayItem;
@@ -1757,6 +1757,148 @@ const sysBridgeRuntime = {
     startPromise: null,
 };
 
+const NATIVE_CONTEXT_MENU_ZH_MAP = {
+    Rename: "重命名",
+    Pin: "置顶",
+    Unpin: "取消置顶",
+    Star: "添加星标",
+    Unstar: "取消星标",
+    "Mark Unread": "标为未读",
+    "Mark as Unread": "标为未读",
+    "Mark Read": "标为已读",
+    "Mark as Read": "标为已读",
+    Copy: "复制",
+    Cut: "剪切",
+    Paste: "粘贴",
+    "Select All": "全选",
+    "Conversation Name": "对话名称",
+    "Conversation ID": "对话 ID",
+    "Project Name": "项目名称",
+    "Workspace Name": "工作区名称",
+    "Workspace Path": "工作区路径",
+    "Copy Path": "复制路径",
+    "Copy Relative Path": "复制相对路径",
+    Split: "分屏",
+    "Split Right": "向右分屏",
+    "Split Left": "向左分屏",
+    "Split Up": "向上分屏",
+    "Split Down": "向下分屏",
+    "Open in New Window": "在新窗口中打开",
+    "Open in New Tab": "在新标签页中打开",
+    "Reveal in File Explorer": "在资源管理器中显示",
+    "Reveal in Explorer": "在资源管理器中显示",
+    "Reveal in Finder": "在 Finder 中显示",
+    Duplicate: "创建副本",
+    Archive: "归档",
+    Unarchive: "取消归档",
+    Delete: "删除",
+    Remove: "移除",
+    Close: "关闭",
+    "Close Tab": "关闭标签页",
+    "Close Others": "关闭其他",
+    "Close Other Tabs": "关闭其他标签页",
+    "Close All": "全部关闭",
+    "Close Tabs to the Right": "关闭右侧标签页",
+    "Close Tabs to the Left": "关闭左侧标签页",
+    "New Conversation": "新建对话",
+    "New Terminal": "新建终端",
+    "New Tab": "新建标签页",
+    Export: "导出",
+    Share: "分享",
+    Reload: "重新加载",
+    Refresh: "刷新",
+};
+
+function translateContextMenuItemsForHost(items) {
+    if (!Array.isArray(items)) {
+        return items;
+    }
+    const active = getActiveUiPlugins();
+    const hasZh = active.some((p) => p && (p.dirName === "antigravity-zh-cn" || (p.dict && p.engineCode)));
+    if (!hasZh) {
+        return items;
+    }
+    const exactDict = {};
+    for (const p of active) {
+        if (p && p.dict && typeof p.dict.exact === "object" && p.dict.exact) {
+            Object.assign(exactDict, p.dict.exact);
+        }
+    }
+    const mapItem = (item) => {
+        if (!item || typeof item !== "object" || item.type === "separator") {
+            return item;
+        }
+        const copy = { ...item };
+        if (typeof copy.label === "string") {
+            const trimmed = copy.label.trim();
+            if (typeof exactDict[trimmed] === "string") {
+                copy.label = exactDict[trimmed];
+            }
+            else if (Object.prototype.hasOwnProperty.call(NATIVE_CONTEXT_MENU_ZH_MAP, trimmed)) {
+                copy.label = NATIVE_CONTEXT_MENU_ZH_MAP[trimmed];
+            }
+        }
+        if (Array.isArray(copy.submenu)) {
+            copy.submenu = copy.submenu.map(mapItem);
+        }
+        return copy;
+    };
+    return items.map(mapItem);
+}
+
+let contextMenuIpcHookInstalled = false;
+function installContextMenuIpcHook() {
+    if (contextMenuIpcHookInstalled) {
+        return;
+    }
+    if (!electron_1 || !electron_1.ipcMain || typeof electron_1.ipcMain.handle !== "function") {
+        return;
+    }
+    contextMenuIpcHookInstalled = true;
+    const origHandle = electron_1.ipcMain.handle.bind(electron_1.ipcMain);
+    electron_1.ipcMain.handle = function (channel, listener) {
+        if (channel === "window:show-context-menu" && typeof listener === "function") {
+            return origHandle(channel, async (event, items) => {
+                const sender = event && event.sender;
+                if (sender && !sender.isDestroyed?.() && Array.isArray(items) && items.length > 0) {
+                    const url = typeof sender.getURL === "function" ? sender.getURL() : "";
+                    if (isHubUiUrl(url)) {
+                        try {
+                            const result = await sender.executeJavaScript(
+                                `(function(){return typeof window.__AGY_SHOW_UNIFIED_CONTEXT_MENU__==='function'?window.__AGY_SHOW_UNIFIED_CONTEXT_MENU__(${JSON.stringify(items)}):'__FALLBACK_NATIVE__';})()`,
+                                true
+                            );
+                            if (result !== "__FALLBACK_NATIVE__") {
+                                return result === undefined ? null : result;
+                            }
+                        }
+                        catch {
+                            // Fall back cleanly to native Electron context menu
+                        }
+                    }
+                }
+                return listener(event, translateContextMenuItemsForHost(items));
+            });
+        }
+        if (channel === "window:close-context-menu" && typeof listener === "function") {
+            return origHandle(channel, (event, ...args) => {
+                const sender = event && event.sender;
+                if (sender && !sender.isDestroyed?.()) {
+                    void Promise.resolve(
+                        sender.executeJavaScript(
+                            "(function(){if(typeof window.__AGY_CLOSE_UNIFIED_CONTEXT_MENU__==='function')window.__AGY_CLOSE_UNIFIED_CONTEXT_MENU__();})()",
+                            true
+                        )
+                    ).catch(() => {});
+                }
+                return listener(event, ...args);
+            });
+        }
+        return origHandle(channel, listener);
+    };
+}
+installContextMenuIpcHook();
+
 function sendSysJson(res, status, payload, origin) {
     const headers = {
         "Content-Type": "application/json; charset=utf-8",
@@ -1910,6 +2052,50 @@ async function handleSysBridgeRequest(req, res) {
             sendSysJson(res, launched.ok ? 200 : 500, launched, origin);
             return;
         }
+        if (reqUrl === "/sys/kb-clip") {
+            const rawContent = typeof body.content === "string" ? body.content.trim() : "";
+            if (!rawContent) {
+                sendSysJson(res, 400, { ok: false, error: "Empty clip content" }, origin);
+                return;
+            }
+            const vaultDir = ensureDefaultKbVault();
+            const rawTitle = typeof body.title === "string" && body.title.trim()
+                ? body.title.trim()
+                : `右键剪藏 ${new Date().toISOString().slice(0, 16).replace("T", " ")}`;
+            const safeName = rawTitle.replace(/[\\/:*?"<>|\r\n]+/g, "_").slice(0, 60).trim() || `clip-${Date.now()}`;
+            const clipsDir = path.join(vaultDir, "剪藏");
+            fs.mkdirSync(clipsDir, { recursive: true });
+            let dst = path.join(clipsDir, `${safeName}.md`);
+            if (fs.existsSync(dst)) {
+                dst = path.join(clipsDir, `${safeName}-${Date.now().toString(36).slice(-4)}.md`);
+            }
+            const ts = new Date().toISOString().slice(0, 19).replace("T", " ");
+            const md = [
+                "---",
+                `title: "${rawTitle.replace(/"/g, '\\"')}"`,
+                "tags: [剪藏, 右键收藏]",
+                `updated: ${ts}`,
+                "---",
+                "",
+                `# ${rawTitle}`,
+                "",
+                rawContent,
+                "",
+            ].join("\n");
+            fs.writeFileSync(dst, md, "utf8");
+            sendSysJson(
+                res,
+                200,
+                {
+                    ok: true,
+                    fullPath: dst,
+                    relPath: path.relative(vaultDir, dst).replace(/\\/g, "/"),
+                    title: rawTitle,
+                },
+                origin
+            );
+            return;
+        }
 
         sendSysJson(res, 404, { ok: false, error: "Unknown route" }, origin);
     }
@@ -1929,6 +2115,7 @@ function ensureSysBridgeStarted(pluginPath) {
             platform: process.platform,
             homeDir: os.homedir(),
             pluginPath: sysBridgeRuntime.pluginPath || "",
+            unifiedContextMenu: true,
         });
     }
     if (sysBridgeRuntime.startPromise) {
@@ -2056,8 +2243,9 @@ function attachWebContents(contents) {
                 const sysBridgeInfo = p.dirName === "antigravity-context-menu"
                     ? await ensureSysBridgeStarted(p.pluginPath)
                     : null;
+                const activePluginDirs = plugins.map((item) => item.dirName);
                 for (const script of p.uiScripts) {
-                    const meta = JSON.stringify({ id: p.dirName, rel: script.rel, appVersion });
+                    const meta = JSON.stringify({ id: p.dirName, rel: script.rel, appVersion, activePlugins: activePluginDirs });
                     const historyInitStmt = initHistory
                         ? `window.__AGY_USAGE_HISTORY_INIT__ = ${JSON.stringify(initHistory)};\n`
                         : "";
@@ -2065,7 +2253,7 @@ function attachWebContents(contents) {
                         ? `window.__AGY_KB_BRIDGE__ = ${JSON.stringify(kbBridgeInfo)};\n`
                         : "";
                     const sysBridgeStmt = sysBridgeInfo
-                        ? `window.__AGY_SYSTEM_BRIDGE__ = ${JSON.stringify(sysBridgeInfo)};\n`
+                        ? `window.__AGY_SYSTEM_BRIDGE__ = ${JSON.stringify({ ...sysBridgeInfo, activePlugins: activePluginDirs })};\n`
                         : "";
                     const widgetCode = `(function(){\ntry{\nwindow.__AGY_PLUGIN_META__ = ${meta};\n${historyInitStmt}${kbBridgeStmt}${sysBridgeStmt}${script.code}\n}catch(err){console.warn('[AgyPluginLoader]', err);}\n})();`;
                     void Promise.resolve(contents.executeJavaScript(widgetCode, true))
